@@ -78,6 +78,14 @@ fn main() -> kerf_core::Result<()> {
     let last = p.track(t2).unwrap().clips.last().unwrap().id;
     edit::set_clip_fade_out(&mut p, last, s(1.0), FadeShape::Linear)?;
 
+    p.album = kerf_core::AlbumInfo {
+        artist: "The Demo Band".into(),
+        title: "Live at the Test Hall".into(),
+        year: "2026".into(),
+        genre: "Rock".into(),
+        ..Default::default()
+    };
+
     session::save(&p, &dir.join("demo.kerf"))?;
     println!("wrote {}", dir.join("demo.kerf").display());
     Ok(())

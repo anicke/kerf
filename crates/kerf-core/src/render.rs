@@ -4,8 +4,9 @@ use std::path::{Path, PathBuf};
 
 use crate::analysis::Meter;
 use crate::buffer::AudioBuffer;
+use crate::encode::{AudioWriter, Tags};
 use crate::error::{Error, Result};
-use crate::io::{ExportSettings, WavWriter};
+use crate::io::ExportSettings;
 use crate::project::{Project, TrackId};
 use crate::resample::{exact_len, Sink, StreamResampler};
 use crate::store::Samples;
@@ -146,6 +147,13 @@ pub fn mix_into(
                     }
                 }
                 // else: output channel beyond the source's channels stays silent.
+            }
+        }
+    }
+    if !opts.pre_fader && project.master_gain != 1.0 {
+        for ch in out.iter_mut().take(oc) {
+            for v in &mut ch[..frames] {
+                *v *= project.master_gain;
             }
         }
     }
@@ -293,7 +301,8 @@ fn map_channels(chunk: &[Vec<f32>], n: usize, pc: usize, out: &mut [Vec<f32>]) {
     }
 }
 
-/// Render a range to a WAV file (converted per `settings`).
+/// Render a range to a file (converted per `settings`), tagged with the
+/// album's details.
 pub fn export_range(
     project: &Project,
     start: Frame,
@@ -303,10 +312,28 @@ pub fn export_range(
     settings: ExportSettings,
     progress: Progress,
 ) -> Result<()> {
+    let tags = Tags {
+        title: project.album.title.clone(),
+        ..album_tags(project)
+    };
+    export_range_tagged(project, start, end, opts, path, settings, &tags, progress)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn export_range_tagged(
+    project: &Project,
+    start: Frame,
+    end: Frame,
+    opts: &RenderOptions,
+    path: &Path,
+    settings: ExportSettings,
+    tags: &Tags,
+    progress: Progress,
+) -> Result<()> {
     if end <= start {
         return Err(Error::InvalidRange);
     }
-    let mut writer = WavWriter::create(
+    let mut writer = AudioWriter::create(
         path,
         settings.rate_for(project.sample_rate),
         settings.channels_for(project.channels),
@@ -322,7 +349,7 @@ pub fn export_range(
         &mut |c: &[&[f32]]| writer.write_planar(c, c[0].len()),
     );
     match result {
-        Ok(()) => writer.finalize(),
+        Ok(()) => writer.finalize(Some(tags)),
         Err(e) => {
             writer.abort();
             Err(e)
@@ -330,45 +357,87 @@ pub fn export_range(
     }
 }
 
+/// Tags common to every file exported from the project.
+pub fn album_tags(p: &Project) -> Tags {
+    let a = &p.album;
+    Tags {
+        artist: a.artist.clone(),
+        album: a.title.clone(),
+        album_artist: a.artist.clone(),
+        date: a.year.clone(),
+        genre: a.genre.clone(),
+        comment: a.comment.clone(),
+        cover: a.cover.clone(),
+        ..Default::default()
+    }
+}
+
+/// Tags for track `index` (0-based) of `total` made from `region`.
+pub fn track_tags(p: &Project, region: &Region, index: usize, total: usize) -> Tags {
+    let base = album_tags(p);
+    Tags {
+        title: region.name.clone(),
+        artist: region.artist.clone().unwrap_or(base.artist.clone()),
+        isrc: region.isrc.clone().unwrap_or_default(),
+        track: Some((index as u32 + 1, total as u32)),
+        ..base
+    }
+}
+
 /// A named span of the timeline, e.g. one song of an album recording.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Region {
     pub start: Frame,
     pub end: Frame,
     pub name: String,
+    /// Track artist, if it differs from the album artist.
+    pub artist: Option<String>,
+    pub isrc: Option<String>,
 }
 
 /// Split `0..end` at every marker. Each region takes the name of the marker it
 /// starts at; audio before the first marker becomes a region named "Start".
 pub fn regions_from_markers(project: &Project, end: Frame) -> Vec<Region> {
-    let mut bounds: Vec<(Frame, String)> = vec![(0, "Start".into())];
+    let start_region = Region {
+        start: 0,
+        name: "Start".into(),
+        ..Default::default()
+    };
+    let mut bounds: Vec<Region> = vec![start_region];
     for m in &project.markers {
         if m.position >= end {
             break;
         }
+        let from_marker = Region {
+            start: m.position,
+            name: m.name.clone(),
+            artist: m.artist.clone(),
+            isrc: m.isrc.clone(),
+            end: 0,
+        };
         if m.position == 0 {
-            bounds[0].1 = m.name.clone();
-        } else if bounds.last().is_some_and(|b| b.0 == m.position) {
-            // Duplicate position: keep the first name.
+            bounds[0] = from_marker;
+        } else if bounds.last().is_some_and(|b| b.start == m.position) {
+            // Duplicate position: keep the first.
         } else {
-            bounds.push((m.position, m.name.clone()));
+            bounds.push(from_marker);
         }
     }
     let mut regions = Vec::new();
-    for (i, (start, name)) in bounds.iter().enumerate() {
-        let region_end = bounds.get(i + 1).map_or(end, |b| b.0);
-        if region_end > *start {
+    for i in 0..bounds.len() {
+        let region_end = bounds.get(i + 1).map_or(end, |b| b.start);
+        if region_end > bounds[i].start {
             regions.push(Region {
-                start: *start,
                 end: region_end,
-                name: name.clone(),
+                ..bounds[i].clone()
             });
         }
     }
     regions
 }
 
-/// Export each region to `dir` as `NN - <base> - <region>.wav`.
+/// Export each region to `dir` as `NN - <base> - <region>.<ext>`, tagged
+/// with its title, track number and the album's details.
 ///
 /// Regions must be contiguous (as from [`regions_from_markers`]). The whole
 /// span is rendered and converted in **one pass** and cut into files at the
@@ -394,10 +463,8 @@ pub fn export_regions(
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            dir.join(format!(
-                "{}.wav",
-                sanitize_file_name(&format!("{:02} - {} - {}", i + 1, base_name, r.name))
-            ))
+            let name = sanitize_file_name(&format!("{:02} - {} - {}", i + 1, base_name, r.name));
+            dir.join(format!("{name}.{}", settings.container.extension()))
         })
         .collect();
     let (in_rate, out_rate) = (project.sample_rate, settings.rate_for(project.sample_rate));
@@ -410,14 +477,15 @@ pub fn export_regions(
 
     let mut current = 0usize;
     let mut written = 0u64;
-    let mut writer: Option<WavWriter> = None;
+    let mut writer: Option<AudioWriter> = None;
+    let total = regions.len();
     let mut sink = |c: &[&[f32]]| -> Result<()> {
         let len = c[0].len() as u64;
         let mut off = 0u64;
         while off < len && current < paths.len() {
             let w = match &mut writer {
                 Some(w) => w,
-                None => writer.insert(WavWriter::create(
+                None => writer.insert(AudioWriter::create(
                     &paths[current],
                     out_rate,
                     channels,
@@ -433,7 +501,12 @@ pub fn export_regions(
             written += n;
             off += n;
             if written == ends[current] {
-                writer.take().unwrap().finalize()?;
+                writer.take().unwrap().finalize(Some(&track_tags(
+                    project,
+                    &regions[current],
+                    current,
+                    total,
+                )))?;
                 current += 1;
             }
         }
@@ -449,7 +522,8 @@ pub fn export_regions(
         &mut sink,
     )?;
     if let Some(w) = writer.take() {
-        w.finalize()?;
+        let last = current.min(total - 1);
+        w.finalize(Some(&track_tags(project, &regions[last], last, total)))?;
     }
     Ok(paths)
 }
@@ -471,21 +545,44 @@ fn cue_quote(s: &str) -> String {
 }
 
 /// Write a CUE sheet describing `regions` as the tracks of one audio file,
-/// e.g. a live concert exported as a single gapless WAV.
+/// e.g. a live concert exported as a single gapless file. Album details
+/// (performer, title, date, genre) and per-track performer and ISRC are
+/// included when known; `fallback_title` is used if the album has no title.
 pub fn write_cue(
     path: &Path,
     audio_file: &str,
-    title: &str,
+    album: &crate::project::AlbumInfo,
+    fallback_title: &str,
     regions: &[Region],
     sample_rate: u32,
 ) -> Result<()> {
     let mut cue = String::new();
     cue.push_str("REM COMMENT \"Kerf\"\n");
+    if !album.year.is_empty() {
+        cue.push_str(&format!("REM DATE {}\n", album.year));
+    }
+    if !album.genre.is_empty() {
+        cue.push_str(&format!("REM GENRE \"{}\"\n", cue_quote(&album.genre)));
+    }
+    if !album.artist.is_empty() {
+        cue.push_str(&format!("PERFORMER \"{}\"\n", cue_quote(&album.artist)));
+    }
+    let title = if album.title.is_empty() {
+        fallback_title
+    } else {
+        &album.title
+    };
     cue.push_str(&format!("TITLE \"{}\"\n", cue_quote(title)));
     cue.push_str(&format!("FILE \"{}\" WAVE\n", cue_quote(audio_file)));
     for (i, r) in regions.iter().enumerate() {
         cue.push_str(&format!("  TRACK {:02} AUDIO\n", i + 1));
         cue.push_str(&format!("    TITLE \"{}\"\n", cue_quote(&r.name)));
+        if let Some(a) = r.artist.as_deref().filter(|a| !a.is_empty()) {
+            cue.push_str(&format!("    PERFORMER \"{}\"\n", cue_quote(a)));
+        }
+        if let Some(isrc) = r.isrc.as_deref().filter(|c| !c.is_empty()) {
+            cue.push_str(&format!("    ISRC {isrc}\n"));
+        }
         cue.push_str(&format!(
             "    INDEX 01 {}\n",
             cue_time(r.start, sample_rate)
@@ -495,13 +592,13 @@ pub fn write_cue(
     Ok(())
 }
 
-/// Export the whole mix as one WAV plus a CUE sheet with a track per region
+/// Export the whole mix as one file plus a CUE sheet with a track per region
 /// (typically [`regions_from_markers`], optionally [`snap_to_sectors`]).
-/// The WAV covers `0..` the end of the last region. Returns both paths.
+/// The file covers `0..` the end of the last region. Returns both paths.
 pub fn export_with_cue(
     project: &Project,
     regions: &[Region],
-    wav_path: &Path,
+    audio_path: &Path,
     title: &str,
     settings: ExportSettings,
     progress: Progress,
@@ -512,17 +609,24 @@ pub fn export_with_cue(
         0,
         end,
         &RenderOptions::default(),
-        wav_path,
+        audio_path,
         settings,
         progress,
     )?;
-    let cue_path = wav_path.with_extension("cue");
-    let file_name = wav_path
+    let cue_path = audio_path.with_extension("cue");
+    let file_name = audio_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    write_cue(&cue_path, &file_name, title, regions, project.sample_rate)?;
-    Ok(vec![wav_path.to_path_buf(), cue_path])
+    write_cue(
+        &cue_path,
+        &file_name,
+        &project.album,
+        title,
+        regions,
+        project.sample_rate,
+    )?;
+    Ok(vec![audio_path.to_path_buf(), cue_path])
 }
 
 // ---------------------------------------------------------------------------
@@ -562,17 +666,9 @@ pub fn snap_to_sectors(regions: &[Region], sector: Frame) -> Vec<Region> {
             Some(prev) if start <= prev.start => {} // collapsed into the previous region
             Some(prev) => {
                 prev.end = start;
-                out.push(Region {
-                    start,
-                    end: r.end,
-                    name: r.name.clone(),
-                });
+                out.push(Region { start, ..r.clone() });
             }
-            None => out.push(Region {
-                start,
-                end: r.end,
-                name: r.name.clone(),
-            }),
+            None => out.push(Region { start, ..r.clone() }),
         }
     }
     if let Some(last) = out.last_mut() {
@@ -582,7 +678,8 @@ pub fn snap_to_sectors(regions: &[Region], sector: Frame) -> Vec<Region> {
     out
 }
 
-/// Export every audible track (post-fader, solo ignored) as its own file.
+/// Export every audible track (post-fader, solo ignored) as its own file,
+/// titled with the track's name.
 pub fn export_stems(
     project: &Project,
     start: Frame,
@@ -594,18 +691,21 @@ pub fn export_stems(
     let tracks: Vec<_> = project.tracks.iter().filter(|t| !t.muted).collect();
     let mut paths = Vec::new();
     for (i, t) in tracks.iter().enumerate() {
-        let path = dir.join(format!(
-            "{}.wav",
-            sanitize_file_name(&format!("{:02} - {}", i + 1, t.name))
-        ));
+        let name = sanitize_file_name(&format!("{:02} - {}", i + 1, t.name));
+        let path = dir.join(format!("{name}.{}", settings.container.extension()));
+        let tags = Tags {
+            title: t.name.clone(),
+            ..album_tags(project)
+        };
         let n = tracks.len() as f64;
-        export_range(
+        export_range_tagged(
             project,
             start,
             end,
             &RenderOptions::tracks(vec![t.id]),
             &path,
             settings,
+            &tags,
             &mut |p| progress((i as f64 + p) / n),
         )?;
         paths.push(path);
@@ -743,12 +843,14 @@ mod tests {
                 Region {
                     start: 0,
                     end: 40,
-                    name: "Intro".into()
+                    name: "Intro".into(),
+                    ..Default::default()
                 },
                 Region {
                     start: 40,
                     end: 110,
-                    name: "Song".into()
+                    name: "Song".into(),
+                    ..Default::default()
                 },
             ]
         );
@@ -766,14 +868,24 @@ mod tests {
                 start: 0,
                 end: 48_000,
                 name: "Intro".into(),
+                ..Default::default()
             },
             Region {
                 start: 48_000 * 90,
                 end: 48_000 * 200,
                 name: "Say \"Hi\"".into(),
+                ..Default::default()
             },
         ];
-        write_cue(&path, "show.wav", "Live", &regions, 48_000).unwrap();
+        write_cue(
+            &path,
+            "show.wav",
+            &crate::project::AlbumInfo::default(),
+            "Live",
+            &regions,
+            48_000,
+        )
+        .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("FILE \"show.wav\" WAVE"));
         assert!(text.contains("  TRACK 02 AUDIO\n    TITLE \"Say 'Hi'\"\n    INDEX 01 01:30:00"));
@@ -998,11 +1110,13 @@ mod tests {
                 start: 0,
                 end: 10,
                 name: "a".into(),
+                ..Default::default()
             },
             Region {
                 start: 20,
                 end: 30,
                 name: "b".into(),
+                ..Default::default()
             },
         ];
         let dir = tempfile::tempdir().unwrap();
@@ -1038,5 +1152,95 @@ mod tests {
             0,
         );
         assert_eq!(nearest_zero_crossing(&p, &[dc], 500, 100), 500);
+    }
+
+    #[test]
+    fn tagged_flac_album_export() {
+        let mut p = Project::new(44_100, 2);
+        let n = 44_100 * 9;
+        let l: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.003).sin() * 0.5).collect();
+        p.add_source_as_track(
+            "show",
+            None,
+            AudioBuffer::new(44_100, vec![l.clone(), l]),
+            0,
+        );
+        p.add_marker(0, "Opener");
+        p.add_marker(44_100 * 3, "Ballad");
+        let guest = p.add_marker(44_100 * 6, "Encore");
+        p.marker_mut(guest).unwrap().artist = Some("Guest Star".into());
+        p.album = crate::project::AlbumInfo {
+            artist: "The Band".into(),
+            title: "Live at the Hall".into(),
+            year: "2026".into(),
+            ..Default::default()
+        };
+        let regions = regions_from_markers(&p, p.length());
+        let settings = ExportSettings {
+            dither: false,
+            ..ExportSettings::FLAC_ALBUM
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let paths = export_regions(
+            &p,
+            &regions,
+            &RenderOptions::default(),
+            dir.path(),
+            "Live",
+            settings,
+            &mut |_| true,
+        )
+        .unwrap();
+        assert_eq!(paths.len(), 3);
+        assert!(paths[1]
+            .to_string_lossy()
+            .ends_with("02 - Live - Ballad.flac"));
+
+        let tag = |i: usize, k: &str| {
+            let t = metaflac::Tag::read_from_path(&paths[i]).unwrap();
+            t.get_vorbis(k)
+                .and_then(|mut v| v.next())
+                .map(str::to_string)
+                .unwrap_or_default()
+        };
+        assert_eq!(tag(0, "TITLE"), "Opener");
+        assert_eq!(tag(1, "TRACKNUMBER"), "2");
+        assert_eq!(tag(1, "TRACKTOTAL"), "3");
+        assert_eq!(tag(1, "ALBUM"), "Live at the Hall");
+        assert_eq!(tag(1, "ARTIST"), "The Band");
+        assert_eq!(tag(2, "ARTIST"), "Guest Star");
+        assert_eq!(tag(2, "ALBUMARTIST"), "The Band");
+
+        // Gapless: the tracks rejoin to exactly the one-piece export.
+        let whole = dir.path().join("whole.flac");
+        export_range(
+            &p,
+            0,
+            p.length(),
+            &RenderOptions::default(),
+            &whole,
+            settings,
+            &mut |_| true,
+        )
+        .unwrap();
+        let mut joined = vec![Vec::new(), Vec::new()];
+        for path in &paths {
+            let b = crate::io::decode_file(path).unwrap();
+            for (c, ch) in joined.iter_mut().enumerate() {
+                ch.extend_from_slice(b.channel(c));
+            }
+        }
+        assert_eq!(joined, crate::io::decode_file(&whole).unwrap().channels());
+
+        // The CUE sheet carries the same details.
+        let cue_path = dir.path().join("show.flac");
+        let out =
+            export_with_cue(&p, &regions, &cue_path, "Live", settings, &mut |_| true).unwrap();
+        let cue = std::fs::read_to_string(&out[1]).unwrap();
+        assert!(cue.contains("PERFORMER \"The Band\""));
+        assert!(cue.contains("TITLE \"Live at the Hall\""));
+        assert!(cue.contains("FILE \"show.flac\" WAVE"));
+        assert!(cue.contains("    PERFORMER \"Guest Star\""));
+        assert!(cue.contains("REM DATE 2026"));
     }
 }

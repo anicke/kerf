@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod album_ui;
 mod app;
 mod audio;
 mod detect_ui;

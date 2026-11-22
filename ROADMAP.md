@@ -30,6 +30,14 @@ device selection; typed times and formats, zero-crossing snap, vertical zoom and
 
 ## Phase 1: Live recording to finished album
 
+**Status:** done except MP3 (see below): track and album metadata, streaming tagged FLAC export
+(16/24-bit, cover art, gapless), album loudness with peak ceiling, the Album window, and richer CUE
+sheets.
+
+**MP3 needs a decision first:** encoding means the LAME library (C, LGPL), which affects licensing
+and packaging, and gapless MP3 needs the encoder's delay/padding information written into the file.
+Alternatives worth weighing: Opus (BSD, modern, gapless by design) instead of or before MP3.
+
 The strongest differentiator, and Kerf's core use case. Builds directly on song detection and CD export.
 
 1. **Track metadata model.** Album fields (artist, album, year, genre, cover art) on the project,
@@ -165,7 +173,7 @@ Size: about 3–4 days in total.
 
 1. Licence choice before making the repository public.
 2. Album loudness default target (-14 LUFS streaming vs. -16 or lower for dynamic live music).
-3. Export formats beyond FLAC and MP3 (e.g. Opus, AAC, DDP for CD replication).
+3. Lossy export: MP3 via LAME (LGPL) and/or Opus; also AAC, DDP for CD replication.
 4. Whether the in-app MCP server should also accept connections from other machines (default:
    local only).
 5. Transcription model and its size/licence, if pursued.

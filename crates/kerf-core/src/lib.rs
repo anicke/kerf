@@ -17,12 +17,14 @@
 //! * Rendering ([`render`]) mixes the timeline on the fly in fixed-size chunks,
 //!   used identically for playback, analysis and export.
 
+pub mod album;
 pub mod analysis;
 pub mod buffer;
 pub mod cache;
 pub mod detect;
 pub mod document;
 pub mod edit;
+pub mod encode;
 pub mod error;
 pub mod io;
 pub mod peaks;
@@ -38,7 +40,8 @@ pub use cache::AudioCache;
 pub use document::Document;
 pub use error::{Error, Result};
 pub use project::{
-    Clip, ClipId, Fade, FadeShape, Marker, MarkerId, Project, Source, SourceId, Track, TrackId,
+    AlbumInfo, Clip, ClipId, Fade, FadeShape, Marker, MarkerId, Project, Source, SourceId, Track,
+    TrackId,
 };
 pub use store::{Samples, SourceAudio};
 

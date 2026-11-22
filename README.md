@@ -59,6 +59,13 @@ MCP server so AI assistants can edit alongside you.
   a project maps the cache directly, with no decoding. Playback renders about 0.25 s ahead on its
   own thread, so disk reads never reach the real-time audio thread, and stop, seek and edits still
   take effect at once.
+- **Albums.** *File → Album…* (Ctrl+Shift+A) holds the album details and cover, lists every track
+  with its title, length, loudness and peak, and sets **album loudness**: one gain for the whole
+  album to reach a target (e.g. -16 LUFS for live music) under a peak ceiling, so quiet songs stay
+  quieter than loud ones. Export as **tagged FLAC** (the *Lossless album* preset): titles, track
+  numbers, artist (with per-track overrides), album, year, genre and cover art. FLAC is written
+  frame by frame, so even a two-hour single-file album uses little memory; tracks stay gapless. CUE
+  sheets include performer, date, genre and ISRC.
 - **Precision editing.** Type exact times in the toolbar's Position, Start, End and Length fields
   (right-click for the time format: m:ss.mmm, seconds, samples or CD frames mm:ss:ff). Drag the
   selection's edges to adjust it. Double-click between markers to select that song. Optionally snap
@@ -127,6 +134,7 @@ for trying song-start detection.
 | M | Add marker | , / . | Previous / next marker |
 | + / − / Z | Zoom in / out / to selection | Ctrl+F | Zoom to fit |
 | Ctrl+Shift+M | Markers panel | Ctrl+, | Preferences |
+| Ctrl+Shift+A | Album details and loudness | | |
 | N | Toggle snap | Ctrl+E / Ctrl+Shift+E | Export mix / split at markers |
 | Ctrl+↑ / ↓ | Vertical zoom | D | Waveform in dB |
 | Shift+Z | Selection to zero crossings | Double-click | Select clip, or song between markers |

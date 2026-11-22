@@ -239,6 +239,9 @@ pub struct ExportSettings {
     /// Mono becomes stereo by duplication; stereo becomes mono by averaging.
     #[serde(default)]
     pub channels: Option<u16>,
+    /// File type (WAV or FLAC).
+    #[serde(default)]
+    pub container: crate::encode::Container,
 }
 
 impl ExportSettings {
@@ -248,6 +251,16 @@ impl ExportSettings {
         dither: true,
         sample_rate: Some(44_100),
         channels: Some(2),
+        container: crate::encode::Container::Wav,
+    };
+
+    /// Lossless album: FLAC 24-bit at the project's rate and channels.
+    pub const FLAC_ALBUM: ExportSettings = ExportSettings {
+        format: SampleFormat::Int24,
+        dither: true,
+        sample_rate: None,
+        channels: None,
+        container: crate::encode::Container::Flac,
     };
 
     /// Output sample rate for a project at `project_rate`.
@@ -262,7 +275,8 @@ impl ExportSettings {
 
     /// Whether these settings produce Red Book CD audio from a project.
     pub fn is_audio_cd(&self, project_rate: u32, project_channels: u16) -> bool {
-        self.format == SampleFormat::Int16
+        self.container == crate::encode::Container::Wav
+            && self.format == SampleFormat::Int16
             && self.dither
             && self.rate_for(project_rate) == 44_100
             && self.channels_for(project_channels) == 2
@@ -276,6 +290,7 @@ impl Default for ExportSettings {
             dither: true,
             sample_rate: None,
             channels: None,
+            container: crate::encode::Container::Wav,
         }
     }
 }

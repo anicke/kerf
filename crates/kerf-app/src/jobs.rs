@@ -21,6 +21,11 @@ pub enum JobDone {
     Loaded(PathBuf, Result<Project, String>),
     Exported(Result<Vec<PathBuf>, String>),
     Recovered(crate::recovery::Orphan, Result<Project, String>),
+    /// Album levels, with the audio state they were measured from.
+    AlbumAnalyzed(
+        Result<kerf_core::album::AlbumAnalysis, String>,
+        crate::album_ui::AudioFingerprint,
+    ),
     /// Song-start analysis, with the tracks and document revision it was made from.
     Analyzed(
         Result<kerf_core::detect::Analysis, String>,

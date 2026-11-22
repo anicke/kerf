@@ -349,6 +349,25 @@ pub struct Marker {
     /// but never touches markers you placed yourself.
     #[serde(default)]
     pub auto: bool,
+    /// Track artist when it differs from the album artist (exported as a tag).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    /// International Standard Recording Code for this track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<String>,
+}
+
+/// Album-level descriptive data, written as tags and into CUE sheets.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AlbumInfo {
+    pub artist: String,
+    pub title: String,
+    pub year: String,
+    pub genre: String,
+    pub comment: String,
+    /// Front cover image (JPEG or PNG).
+    pub cover: Option<PathBuf>,
 }
 
 /// The whole editable state. Cheap to clone (audio is shared via `Arc`).
@@ -366,6 +385,9 @@ pub struct Project {
     pub auto_crossfade: bool,
     /// Where new audio (imports, renders) is stored. `None` keeps it in memory.
     pub cache: Option<Arc<AudioCache>>,
+    pub album: AlbumInfo,
+    /// Linear gain applied to the final mix (album loudness).
+    pub master_gain: f32,
 }
 
 impl PartialEq for Project {
@@ -373,6 +395,8 @@ impl PartialEq for Project {
         self.sample_rate == other.sample_rate
             && self.channels == other.channels
             && self.auto_crossfade == other.auto_crossfade
+            && self.album == other.album
+            && self.master_gain == other.master_gain
             && self.tracks == other.tracks
             && self.markers == other.markers
             && self.sources.len() == other.sources.len()
@@ -401,6 +425,8 @@ impl Project {
             ids: IdGen::default(),
             auto_crossfade: true,
             cache: None,
+            album: AlbumInfo::default(),
+            master_gain: 1.0,
         }
     }
 
@@ -536,6 +562,8 @@ impl Project {
             position,
             name,
             auto,
+            artist: None,
+            isrc: None,
         });
         self.sort_markers();
         id

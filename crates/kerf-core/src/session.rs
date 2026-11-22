@@ -96,6 +96,14 @@ struct ProjectFile {
     markers: Vec<Marker>,
     #[serde(default = "default_true")]
     auto_crossfade: bool,
+    #[serde(default)]
+    album: crate::project::AlbumInfo,
+    #[serde(default = "unity")]
+    master_gain: f32,
+}
+
+fn unity() -> f32 {
+    1.0
 }
 
 fn default_true() -> bool {
@@ -193,6 +201,8 @@ fn save_impl(project: &Project, path: &Path, recovery: bool) -> Result<()> {
         tracks: project.tracks.clone(),
         markers: project.markers.clone(),
         auto_crossfade: project.auto_crossfade,
+        album: project.album.clone(),
+        master_gain: project.master_gain,
     };
     let json =
         serde_json::to_string_pretty(&file).map_err(|e| Error::ProjectFormat(e.to_string()))?;
@@ -261,6 +271,8 @@ pub fn load(path: &Path, cache: Option<Arc<AudioCache>>) -> Result<Project> {
     let mut project = Project::new(file.sample_rate, file.channels);
     project.ids = file.ids;
     project.auto_crossfade = file.auto_crossfade;
+    project.album = file.album.clone();
+    project.master_gain = file.master_gain;
     project.cache = cache;
     for r in decoded {
         let (e, p, audio, peaks) = r?;

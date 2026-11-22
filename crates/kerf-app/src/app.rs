@@ -113,6 +113,7 @@ pub enum Dialog {
     AudioCache(CacheView),
     DetectSongs(Box<crate::detect_ui::DetectState>),
     Preferences(Box<PrefsDraft>),
+    Album(Box<crate::album_ui::AlbumState>),
     Recover(Vec<crate::recovery::Orphan>),
     About,
 }
@@ -192,6 +193,7 @@ pub enum Action {
     ExtendToEnd,
     ToggleMarkersPanel,
     Preferences,
+    Album,
     ZeroCrossings,
     ToggleZeroCrossingSnap,
     SelectSong,
@@ -786,6 +788,7 @@ impl KerfApp {
             VZoomOut => self.view.vzoom = (self.view.vzoom / 2.0).max(1.0),
             VZoomReset => self.view.vzoom = 1.0,
             ToggleDbScale => self.view.db_scale = !self.view.db_scale,
+            Album => self.dialog = Some(Dialog::Album(Box::default())),
             Preferences => {
                 self.dialog = Some(Dialog::Preferences(Box::new(PrefsDraft {
                     prefs: self.prefs.clone(),
@@ -946,6 +949,21 @@ impl KerfApp {
             Ok(()) => self.info("Preferences saved"),
             Err(e) => self.error(format!("Could not save preferences: {e}")),
         }
+    }
+
+    /// Measure the album (every track and the whole) in the background.
+    fn analyze_album(&mut self, ctx: &egui::Context) {
+        if self.busy() {
+            return;
+        }
+        let project = self.project().clone();
+        let fingerprint = crate::album_ui::AudioFingerprint::of(&project);
+        self.job = Some(Job::spawn(ctx, "Measuring album…", move |ctl| {
+            let regions = render::regions_from_markers(&project, project.length());
+            let r = kerf_core::album::analyze(&project, &regions, &mut |p| ctl.progress(p))
+                .map_err(|e| e.to_string());
+            JobDone::AlbumAnalyzed(r, fingerprint)
+        }));
     }
 
     fn recover(&mut self, ctx: &egui::Context, orphan: crate::recovery::Orphan) {
@@ -1159,16 +1177,18 @@ impl KerfApp {
             dlg = dlg.set_directory(d);
         }
         let target = match kind {
-            ExportKind::Mix | ExportKind::Selection | ExportKind::CueSheet => dlg
-                .add_filter("WAV audio", &["wav"])
-                .set_file_name(format!("{base}.wav"))
-                .save_file()
-                .map(|mut p| {
-                    if p.extension().is_none() {
-                        p.set_extension("wav");
-                    }
-                    p
-                }),
+            ExportKind::Mix | ExportKind::Selection | ExportKind::CueSheet => {
+                let c = settings.container;
+                dlg.add_filter(c.label(), &[c.extension()])
+                    .set_file_name(format!("{base}.{}", c.extension()))
+                    .save_file()
+                    .map(|mut p| {
+                        if p.extension().is_none() {
+                            p.set_extension(c.extension());
+                        }
+                        p
+                    })
+            }
             ExportKind::Markers | ExportKind::Stems => {
                 dlg.set_title("Choose output folder").pick_folder()
             }
@@ -1266,6 +1286,15 @@ impl KerfApp {
                     self.error(errors.join("; "));
                 }
             }
+            JobDone::AlbumAnalyzed(r, fingerprint) => {
+                if let Some(Dialog::Album(state)) = &mut self.dialog {
+                    state.analyzing = false;
+                    match r {
+                        Ok(a) => state.analysis = Some((fingerprint, a)),
+                        Err(e) => self.status = Some((format!("Album analysis failed: {e}"), true)),
+                    }
+                }
+            }
             JobDone::Recovered(orphan, r) => match r {
                 Ok(project) => {
                     self.player.stop();
@@ -1326,6 +1355,7 @@ impl KerfApp {
             (cmd_shift, Key::ArrowLeft, Action::ExtendPrevEditPoint),
             (cmd_shift, Key::ArrowRight, Action::ExtendNextEditPoint),
             (cmd_shift, Key::M, Action::ToggleMarkersPanel),
+            (cmd_shift, Key::A, Action::Album),
             (cmd, Key::ArrowLeft, Action::PrevEditPoint),
             (cmd, Key::ArrowRight, Action::NextEditPoint),
             (cmd, Key::Comma, Action::Preferences),
@@ -1470,6 +1500,7 @@ impl KerfApp {
                     Action::Export(ExportKind::Markers),
                     &mut act,
                 );
+                item(ui, "Album…", "Ctrl+Shift+A", Action::Album, &mut act);
                 item(
                     ui,
                     "Export Mix with CUE Sheet…",
@@ -1888,6 +1919,15 @@ impl KerfApp {
                 format_time(p.length(), p.sample_rate)
             );
             ui.label(egui::RichText::new(fmt).weak());
+            if p.master_gain != 1.0 {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Album gain {:+.1} dB",
+                        kerf_core::album::master_gain_db(p)
+                    ))
+                    .weak(),
+                );
+            }
             ui.separator();
             if let Some((msg, is_err)) = &self.status {
                 let color = if *is_err {
@@ -1935,6 +1975,7 @@ impl KerfApp {
             Dialog::AudioCache(_) => "Audio Cache",
             Dialog::DetectSongs(_) => "Detect Song Starts",
             Dialog::Preferences(_) => "Preferences",
+            Dialog::Album(_) => "Album",
             Dialog::Recover(_) => "Recover Unsaved Work",
             Dialog::About => "About Kerf",
         };
@@ -1947,7 +1988,7 @@ impl KerfApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .max_width(540.0)
+            .max_width(if matches!(dialog, Dialog::Album(_)) { 760.0 } else { 540.0 })
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| match &mut dialog {
                 Dialog::Normalize(s) => {
@@ -2131,6 +2172,48 @@ impl KerfApp {
                             close = true;
                         }
                     });
+                }
+                Dialog::Album(state) => {
+                    use crate::album_ui::Outcome;
+                    match crate::album_ui::ui(self, ui, state) {
+                        Outcome::None => {}
+                        Outcome::Analyze => {
+                            if self.job.is_none() {
+                                state.analyzing = true;
+                                run = Some(Box::new(|app, ctx| app.analyze_album(ctx)));
+                            }
+                        }
+                        Outcome::ApplyGain(db) => {
+                            run = Some(Box::new(move |app, _| {
+                                app.edit(&format!("Album gain {db:+.1} dB"), |p| kerf_core::album::adjust_master_gain(p, db));
+                            }));
+                        }
+                        Outcome::ResetGain => {
+                            run = Some(Box::new(|app, _| {
+                                app.edit("Reset album gain", |p| {
+                                    p.master_gain = 1.0;
+                                    Ok(())
+                                });
+                            }));
+                        }
+                        Outcome::ChooseCover => {
+                            run = Some(Box::new(|app, _| {
+                                if let Some(path) =
+                                    rfd::FileDialog::new().add_filter("Image", &["jpg", "jpeg", "png"]).pick_file()
+                                {
+                                    app.edit("Album cover", |p| {
+                                        p.album.cover = Some(path);
+                                        Ok(())
+                                    });
+                                }
+                            }));
+                        }
+                        Outcome::Export => {
+                            run = Some(Box::new(|app, ctx| app.perform(ctx, Action::Export(ExportKind::Markers))));
+                            close = true;
+                        }
+                        Outcome::Close => close = true,
+                    }
                 }
                 Dialog::Preferences(draft) => {
                     prefs_ui(ui, draft, self.player.fallback_note.as_deref());
@@ -2504,6 +2587,11 @@ impl KerfApp {
                 Ok("detect") => Some(Action::DetectSongs),
                 Ok("split") => Some(Action::Export(ExportKind::Markers)),
                 Ok("prefs") => Some(Action::Preferences),
+                Ok("album") => Some(Action::Album),
+                Ok("split-flac") => {
+                    self.export_settings = ExportSettings::FLAC_ALBUM;
+                    Some(Action::Export(ExportKind::Markers))
+                }
                 Ok("precision") => {
                     self.prefs.time_format = kerf_core::util::TimeFormat::CdFrames;
                     self.view.vzoom = 4.0;
@@ -2577,6 +2665,7 @@ impl KerfApp {
 #[derive(PartialEq)]
 enum Preset {
     AudioCd,
+    FlacAlbum,
     Archive,
     Custom,
 }
@@ -2590,9 +2679,20 @@ fn export_settings_ui(
     cd_safe: Option<&mut bool>,
 ) {
     let (pr, pc) = (p.sample_rate, p.channels);
+    use kerf_core::encode::Container;
     let preset = if s.is_audio_cd(pr, pc) {
         Preset::AudioCd
-    } else if s.format.is_float() && s.rate_for(pr) == pr && s.channels_for(pc) == pc {
+    } else if s.container == Container::Flac
+        && s.format == SampleFormat::Int24
+        && s.rate_for(pr) == pr
+        && s.channels_for(pc) == pc
+    {
+        Preset::FlacAlbum
+    } else if s.container == Container::Wav
+        && s.format.is_float()
+        && s.rate_for(pr) == pr
+        && s.channels_for(pc) == pc
+    {
         Preset::Archive
     } else {
         Preset::Custom
@@ -2605,6 +2705,7 @@ fn export_settings_ui(
             ui.label("Preset");
             let label = match preset {
                 Preset::AudioCd => "Audio CD",
+                Preset::FlacAlbum => "Lossless album (FLAC 24-bit)",
                 Preset::Archive => "Archive (32-bit float)",
                 Preset::Custom => "Custom",
             };
@@ -2621,6 +2722,18 @@ fn export_settings_ui(
                         chosen = Some(Preset::AudioCd);
                     }
                     if ui
+                        .selectable_label(
+                            preset == Preset::FlacAlbum,
+                            "Lossless album (FLAC 24-bit)",
+                        )
+                        .on_hover_text(
+                            "FLAC, 24-bit at the project rate, tagged with album and track details",
+                        )
+                        .clicked()
+                    {
+                        chosen = Some(Preset::FlacAlbum);
+                    }
+                    if ui
                         .selectable_label(preset == Preset::Archive, "Archive (32-bit float)")
                         .on_hover_text(
                             "Lossless 32-bit float at the project's own rate and channels",
@@ -2632,11 +2745,31 @@ fn export_settings_ui(
                 });
             ui.end_row();
 
+            ui.label("File type");
+
+            egui::ComboBox::from_id_salt("container")
+                .selected_text(s.container.label())
+                .show_ui(ui, |ui| {
+                    for c in Container::ALL {
+                        ui.selectable_value(&mut s.container, c, c.label());
+                    }
+                });
+
+            if !s.container.supports(s.format) {
+                s.format = SampleFormat::Int24; // FLAC is 16 or 24-bit
+            }
+
+            ui.end_row();
+
             ui.label("Format");
+
             egui::ComboBox::from_id_salt("fmt")
                 .selected_text(s.format.label())
                 .show_ui(ui, |ui| {
-                    for f in SampleFormat::ALL {
+                    for f in SampleFormat::ALL
+                        .into_iter()
+                        .filter(|f| s.container.supports(*f))
+                    {
                         ui.selectable_value(&mut s.format, f, f.label());
                     }
                 });
@@ -2707,11 +2840,21 @@ fn export_settings_ui(
                 *c = true;
             }
         }
+        Some(Preset::FlacAlbum) => *s = ExportSettings::FLAC_ALBUM,
         Some(Preset::Archive) => *s = ExportSettings::default(),
         _ => {}
     }
 
     let out_rate = s.rate_for(pr);
+    if s.container == Container::Flac {
+        ui.label(
+            egui::RichText::new(
+                "Tagged with the album details and track titles from File → Album….",
+            )
+            .weak()
+            .small(),
+        );
+    }
     if s.format.is_float() {
         ui.label(
             egui::RichText::new(
