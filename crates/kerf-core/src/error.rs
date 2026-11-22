@@ -22,6 +22,8 @@ pub enum Error {
     Silent,
     #[error("operation cancelled")]
     Cancelled,
+    #[error("{0}")]
+    Unsupported(&'static str),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

@@ -757,6 +757,18 @@ pub fn move_track(p: &mut Project, id: TrackId, new_index: usize) -> Result<()> 
     Ok(())
 }
 
+/// Move every marker to the nearest CD sector boundary (1/75 s).
+pub fn snap_markers_to_sectors(p: &mut Project) -> Result<()> {
+    let sector = render::sector_len(p.sample_rate).ok_or(Error::Unsupported(
+        "this sample rate has no whole CD sectors (it is not a multiple of 75 Hz)",
+    ))?;
+    for m in &mut p.markers {
+        m.position = (m.position + sector / 2) / sector * sector;
+    }
+    p.sort_markers();
+    Ok(())
+}
+
 pub fn remove_marker(p: &mut Project, id: MarkerId) -> Result<()> {
     p.markers.retain(|m| m.id != id);
     Ok(())
@@ -1131,5 +1143,23 @@ mod tests {
         let out = render(&p, 0, 1000, &o);
         assert!(out.channel(0)[699].abs() < 0.01);
         assert!(out.channel(0)[700..].iter().any(|&s| s.abs() > 0.1));
+    }
+
+    #[test]
+    fn snap_markers_to_cd_sectors() {
+        let mut p = Project::new(44_100, 2);
+        p.add_marker(1000, "a");
+        p.add_marker(44_100 * 60 + 295, "b");
+        snap_markers_to_sectors(&mut p).unwrap();
+        assert_eq!(
+            p.markers.iter().map(|m| m.position).collect::<Vec<_>>(),
+            [1176, 44_100 * 60 + 588]
+        );
+        let mut odd = Project::new(32_000, 2);
+        odd.add_marker(5, "x");
+        assert!(matches!(
+            snap_markers_to_sectors(&mut odd),
+            Err(Error::Unsupported(_))
+        ));
     }
 }

@@ -28,6 +28,12 @@ Focused purely on editing: no plugins or effects, just careful, non-destructive 
   Markers* or *Export Mix with CUE Sheet* (one gapless WAV plus a `.cue` file). Spoken
   introductions stay with the song they introduce. Re-running replaces only automatic markers.
   Songs that flow into each other without a gap need a marker by hand.
+- **CD-safe track boundaries.** Split and CUE exports can snap each track boundary to a CD sector
+  (1/75 s, moving it at most 6.7 ms; your markers stay put) and pad only the end of the album, so
+  there are no sector boundary errors: tracks burn gaplessly as separate files or from the CUE
+  sheet. The export dialog shows how many boundaries would otherwise be affected. Works at any rate
+  that is a multiple of 75 Hz (44.1, 48, 88.2, 96 kHz): those sectors convert exactly to CD sectors.
+  *Markers → Snap Markers to CD Sectors* moves the markers themselves.
 - **Editing.** Cut/copy/paste (insert, overwrite, or mix), delete (close gap), silence (leave gap),
   trim to selection, insert silence, split, move and trim clips with snapping, clip gain,
   track gain/pan/mute/solo, and markers. Panning uses a constant-power law (−3 dB at centre) for

@@ -163,6 +163,7 @@ pub enum Action {
     ToggleSnap,
     AudioCache,
     DetectSongs,
+    SnapMarkersToSectors,
     About,
 }
 
@@ -178,6 +179,8 @@ pub struct KerfApp {
     pub fade_shape: FadeShape,
     pub paste_mode: PasteMode,
     pub export_settings: ExportSettings,
+    /// Snap split/CUE track boundaries to CD sectors (no sector boundary errors).
+    pub cd_safe: bool,
     pub status: Option<(String, bool)>,
     pub dialog: Option<Dialog>,
     pub job: Option<Job>,
@@ -230,6 +233,7 @@ impl KerfApp {
             fade_shape: FadeShape::EqualPower,
             paste_mode: PasteMode::Insert,
             export_settings: ExportSettings::default(),
+            cd_safe: true,
             status: None,
             dialog: None,
             job: None,
@@ -575,6 +579,14 @@ impl KerfApp {
             ToggleLoop => self.loop_playback = !self.loop_playback,
             ToggleSnap => self.view.snap = !self.view.snap,
             DetectSongs => self.detect_songs(ctx),
+            SnapMarkersToSectors => {
+                if self
+                    .edit("Snap markers to CD sectors", edit::snap_markers_to_sectors)
+                    .is_some()
+                {
+                    self.info("Markers moved to the nearest CD sector boundary (1/75 s)");
+                }
+            }
             AudioCache => {
                 self.dialog = Some(Dialog::AudioCache(CacheView {
                     stats: None,
@@ -833,6 +845,7 @@ impl KerfApp {
             }
         };
         let Some(target) = target else { return };
+        let regions = self.export_regions_for(&project);
 
         self.job = Some(Job::spawn(ctx, kind.title(), move |ctl| {
             let mut progress = |p: f64| ctl.progress(p);
@@ -847,24 +860,26 @@ impl KerfApp {
                     &mut progress,
                 )
                 .map(|()| vec![target.clone()]),
-                ExportKind::Markers => {
-                    let regions = render::regions_from_markers(&project, len);
-                    render::export_regions(
-                        &project,
-                        &regions,
-                        &RenderOptions::default(),
-                        &target,
-                        &base,
-                        settings,
-                        &mut progress,
-                    )
-                }
+                ExportKind::Markers => render::export_regions(
+                    &project,
+                    &regions,
+                    &RenderOptions::default(),
+                    &target,
+                    &base,
+                    settings,
+                    &mut progress,
+                ),
                 ExportKind::Stems => {
                     render::export_stems(&project, 0, len, &target, settings, &mut progress)
                 }
-                ExportKind::CueSheet => {
-                    render::export_with_cue(&project, &target, &base, settings, &mut progress)
-                }
+                ExportKind::CueSheet => render::export_with_cue(
+                    &project,
+                    &regions,
+                    &target,
+                    &base,
+                    settings,
+                    &mut progress,
+                ),
             };
             JobDone::Exported(r.map_err(|e| e.to_string()))
         }));
@@ -1205,6 +1220,13 @@ impl KerfApp {
                 item(ui, "Next Marker", ".", Action::NextMarker, &mut act);
                 ui.separator();
                 item(ui, "Detect Song Starts…", "", Action::DetectSongs, &mut act);
+                item(
+                    ui,
+                    "Snap Markers to CD Sectors",
+                    "",
+                    Action::SnapMarkersToSectors,
+                    &mut act,
+                );
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Double-click a marker to rename,\nright-click to delete.")
@@ -1473,7 +1495,7 @@ impl KerfApp {
                     let kind = *kind;
                     match kind {
                         ExportKind::Markers => {
-                            let regions = render::regions_from_markers(self.project(), self.project().length());
+                            let regions = self.export_regions_for(self.project());
                             ui.label(format!("Creates {} file(s), one per region between markers:", regions.len()));
                             egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
                                 let sr = self.project().sample_rate;
@@ -1489,7 +1511,7 @@ impl KerfApp {
                             ui.label("Creates one file per unmuted track (with track gain and pan).");
                         }
                         ExportKind::CueSheet => {
-                            let n = render::regions_from_markers(self.project(), self.project().length()).len();
+                            let n = self.export_regions_for(self.project()).len();
                             ui.label(format!(
                                 "Renders the whole mix as one WAV plus a CUE sheet with {n} track(s), one per marker. \
                                  Ideal for live recordings: players and CD burners play it gaplessly."
@@ -1504,6 +1526,10 @@ impl KerfApp {
                         _ => {
                             ui.label("Renders all audible tracks with gain, pan, mute and solo.");
                         }
+                    }
+                    if matches!(kind, ExportKind::Markers | ExportKind::CueSheet) {
+                        ui.separator();
+                        cd_safe_ui(ui, self.doc.project(), &mut self.cd_safe);
                     }
                     ui.separator();
                     egui::Grid::new("exp").num_columns(2).show(ui, |ui| {
@@ -1680,6 +1706,16 @@ impl KerfApp {
         }
         if let Some(f) = run {
             f(self, ctx);
+        }
+    }
+
+    /// Track regions for split/CUE export: one per marker, snapped to CD
+    /// sectors when CD-safe is on and the rate allows it.
+    fn export_regions_for(&self, p: &Project) -> Vec<render::Region> {
+        let regions = render::regions_from_markers(p, p.length());
+        match render::sector_len(p.sample_rate).filter(|_| self.cd_safe) {
+            Some(sector) => render::snap_to_sectors(&regions, sector),
+            None => regions,
         }
     }
 
@@ -1871,6 +1907,11 @@ impl KerfApp {
             let action = match std::env::var("KERF_SCREENSHOT_DIALOG").as_deref() {
                 Ok("cache") => Some(Action::AudioCache),
                 Ok("detect") => Some(Action::DetectSongs),
+                Ok("split") => Some(Action::Export(ExportKind::Markers)),
+                Ok("split-raw") => {
+                    self.cd_safe = false;
+                    Some(Action::Export(ExportKind::Markers))
+                }
                 _ => None,
             };
             if let Some(a) = action {
@@ -1895,6 +1936,55 @@ impl KerfApp {
                 }),
             ));
         }
+    }
+}
+
+/// The CD-safe option with a live count of sector boundary errors.
+fn cd_safe_ui(ui: &mut egui::Ui, p: &Project, cd_safe: &mut bool) {
+    let Some(sector) = render::sector_len(p.sample_rate) else {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            format!(
+                "{} Hz has no whole CD sectors, so tracks can't be made CD-safe.",
+                p.sample_rate
+            ),
+        );
+        return;
+    };
+    ui.checkbox(cd_safe, "CD-safe track boundaries")
+        .on_hover_text(
+        "Moves each split point by at most 1/150 s to a CD sector boundary. Your markers stay put.",
+    );
+    let regions = render::regions_from_markers(p, p.length());
+    let errors = render::sector_errors(&regions, sector);
+    let tracks = regions.len().saturating_sub(1);
+    let text = if *cd_safe {
+        "No sector boundary errors: burns gaplessly as separate tracks or with the CUE sheet."
+            .to_string()
+    } else if errors == 0 {
+        "No sector boundary errors.".to_string()
+    } else {
+        format!(
+            "{errors} of {tracks} track boundaries would cause sector boundary errors: burned as separate \
+             files, silence is padded between tracks (audible on gapless live albums)."
+        )
+    };
+    let color = if !*cd_safe && errors > 0 {
+        ui.visuals().warn_fg_color
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    ui.label(egui::RichText::new(text).color(color).small());
+    if p.sample_rate != 44_100 {
+        ui.label(
+            egui::RichText::new(format!(
+                "Audio CDs are 44.1 kHz; burning software will convert this {} Hz project. \
+                 CD-safe boundaries stay exact through that conversion.",
+                p.sample_rate
+            ))
+            .weak()
+            .small(),
+        );
     }
 }
 

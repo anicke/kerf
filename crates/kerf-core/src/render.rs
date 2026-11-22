@@ -337,16 +337,18 @@ pub fn write_cue(
     Ok(())
 }
 
-/// Export the whole mix as one WAV plus a CUE sheet with a track at every
-/// marker. Returns both paths.
+/// Export the whole mix as one WAV plus a CUE sheet with a track per region
+/// (typically [`regions_from_markers`], optionally [`snap_to_sectors`]).
+/// The WAV covers `0..` the end of the last region. Returns both paths.
 pub fn export_with_cue(
     project: &Project,
+    regions: &[Region],
     wav_path: &Path,
     title: &str,
     settings: ExportSettings,
     progress: Progress,
 ) -> Result<Vec<PathBuf>> {
-    let end = project.length();
+    let end = regions.last().map_or(project.length(), |r| r.end);
     export_range(
         project,
         0,
@@ -361,14 +363,65 @@ pub fn export_with_cue(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    write_cue(
-        &cue_path,
-        &file_name,
-        title,
-        &regions_from_markers(project, end),
-        project.sample_rate,
-    )?;
+    write_cue(&cue_path, &file_name, title, regions, project.sample_rate)?;
     Ok(vec![wav_path.to_path_buf(), cue_path])
+}
+
+// ---------------------------------------------------------------------------
+// CD sectors
+// ---------------------------------------------------------------------------
+
+/// Frames per CD sector (1/75 s) at `sample_rate`: 588 at 44.1 kHz.
+///
+/// `None` if the rate is not a multiple of 75. For rates that are (48, 88.2,
+/// 96 kHz…), a sector boundary converts to a CD sector boundary exactly, so
+/// snapping at the project rate stays correct after conversion to 44.1 kHz.
+pub fn sector_len(sample_rate: u32) -> Option<Frame> {
+    (sample_rate > 0 && sample_rate.is_multiple_of(75)).then_some(sample_rate as Frame / 75)
+}
+
+/// Tracks (all but the last) whose length is not a whole number of sectors:
+/// burned as separate files, each would get silence padded at its end, a
+/// "sector boundary error" (SBE) heard as a gap or click on gapless albums.
+pub fn sector_errors(regions: &[Region], sector: Frame) -> usize {
+    let n = regions.len().saturating_sub(1);
+    regions[..n]
+        .iter()
+        .filter(|r| (r.end - r.start) % sector != 0)
+        .count()
+}
+
+/// Move every boundary between regions to the nearest sector boundary (at
+/// most half a sector, 6.7 ms) and pad the end of the last region to a whole
+/// sector, so no track has a sector boundary error. Regions that snapping
+/// would make empty are merged into their neighbour. Markers are untouched.
+pub fn snap_to_sectors(regions: &[Region], sector: Frame) -> Vec<Region> {
+    let snap = |f: Frame| (f + sector / 2) / sector * sector;
+    let mut out: Vec<Region> = Vec::new();
+    for (i, r) in regions.iter().enumerate() {
+        let start = if i == 0 { r.start } else { snap(r.start) };
+        match out.last_mut() {
+            Some(prev) if start <= prev.start => {} // collapsed into the previous region
+            Some(prev) => {
+                prev.end = start;
+                out.push(Region {
+                    start,
+                    end: r.end,
+                    name: r.name.clone(),
+                });
+            }
+            None => out.push(Region {
+                start,
+                end: r.end,
+                name: r.name.clone(),
+            }),
+        }
+    }
+    if let Some(last) = out.last_mut() {
+        let len = last.end - last.start;
+        last.end = last.start + len.div_ceil(sector) * sector;
+    }
+    out
 }
 
 /// Export every audible track (post-fader, solo ignored) as its own file.
@@ -566,5 +619,113 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("FILE \"show.wav\" WAVE"));
         assert!(text.contains("  TRACK 02 AUDIO\n    TITLE \"Say 'Hi'\"\n    INDEX 01 01:30:00"));
+    }
+
+    fn cd_project(markers: &[Frame]) -> Project {
+        let mut p = Project::new(44_100, 2);
+        let n = 44_100 * 20 + 123;
+        let l: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.003).sin() * 0.5).collect();
+        let r: Vec<f32> = l.iter().map(|v| -v).collect();
+        p.add_source_as_track("show", None, AudioBuffer::new(44_100, vec![l, r]), 0);
+        for (i, &m) in markers.iter().enumerate() {
+            p.add_marker(m, format!("Song {}", i + 1));
+        }
+        p
+    }
+
+    #[test]
+    fn sector_lengths() {
+        assert_eq!(sector_len(44_100), Some(588));
+        assert_eq!(sector_len(48_000), Some(640));
+        assert_eq!(sector_len(32_000), None);
+        // A 48 kHz sector converts to exactly one CD sector.
+        assert_eq!(640 * 44_100 / 48_000, 588);
+    }
+
+    #[test]
+    fn snapping_removes_sector_boundary_errors() {
+        let p = cd_project(&[44_100 * 3 + 17, 44_100 * 9 + 300, 44_100 * 14 + 587]);
+        let regions = regions_from_markers(&p, p.length());
+        assert_eq!(
+            sector_errors(&regions, 588),
+            3,
+            "unsnapped: every track but the last"
+        );
+        let snapped = snap_to_sectors(&regions, 588);
+        assert_eq!(snapped.len(), regions.len());
+        assert_eq!(sector_errors(&snapped, 588), 0);
+        for (a, b) in regions.iter().zip(&snapped) {
+            assert_eq!(b.start % 588, 0);
+            assert!(
+                a.start.abs_diff(b.start) <= 294,
+                "moves at most half a sector"
+            );
+            assert_eq!(a.name, b.name);
+        }
+        for w in snapped.windows(2) {
+            assert_eq!(w[0].end, w[1].start, "contiguous: nothing lost or repeated");
+        }
+        let last = snapped.last().unwrap();
+        assert_eq!(last.end % 588, 0, "last track padded to a whole sector");
+        assert!(last.end >= p.length() && last.end - p.length() < 588);
+    }
+
+    #[test]
+    fn snapping_merges_markers_within_one_sector() {
+        let p = cd_project(&[44_100 * 5, 44_100 * 5 + 100]);
+        let snapped = snap_to_sectors(&regions_from_markers(&p, p.length()), 588);
+        assert_eq!(snapped.len(), 2);
+        assert_eq!(sector_errors(&snapped, 588), 0);
+    }
+
+    #[test]
+    fn cd_safe_split_files_rejoin_to_the_original() {
+        let p = cd_project(&[44_100 * 4 + 1, 44_100 * 11 + 299]);
+        let regions = snap_to_sectors(&regions_from_markers(&p, p.length()), 588);
+        let dir = tempfile::tempdir().unwrap();
+        let settings = ExportSettings {
+            format: crate::io::SampleFormat::Float32,
+            dither: false,
+        };
+        let paths = export_regions(
+            &p,
+            &regions,
+            &RenderOptions::default(),
+            dir.path(),
+            "Live",
+            settings,
+            &mut |_| true,
+        )
+        .unwrap();
+        let mut joined = vec![Vec::new(), Vec::new()];
+        for (i, path) in paths.iter().enumerate() {
+            let buf = crate::io::decode_file(path).unwrap();
+            if i + 1 < paths.len() {
+                assert_eq!(buf.frames() % 588, 0, "{} has no SBE", path.display());
+            }
+            for (j, ch) in joined.iter_mut().enumerate() {
+                ch.extend_from_slice(buf.channel(j));
+            }
+        }
+        let original = render(
+            &p,
+            0,
+            regions.last().unwrap().end,
+            &RenderOptions::default(),
+        );
+        assert_eq!(
+            joined,
+            original.channels(),
+            "gapless: split files rejoin bit-exactly"
+        );
+
+        // The CUE sheet points at exactly the same places.
+        let wav = dir.path().join("Live.wav");
+        let out = export_with_cue(&p, &regions, &wav, "Live", settings, &mut |_| true).unwrap();
+        let cue = std::fs::read_to_string(&out[1]).unwrap();
+        for r in &regions {
+            assert!(cue.contains(&format!("INDEX 01 {}", cue_time(r.start, 44_100))));
+            assert_eq!(r.start * 75 % 44_100, 0, "exact: no rounding in the CUE");
+        }
     }
 }
