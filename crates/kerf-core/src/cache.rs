@@ -239,6 +239,11 @@ impl AudioCache {
         CacheWriter::new(self, &format!("r{:016x}", h.0), channels, sample_rate)
     }
 
+    /// Open an existing entry by key (e.g. one named in a recovery file).
+    pub fn open_entry(&self, key: &str) -> Option<(SourceAudio, PeakCache)> {
+        self.load(key)
+    }
+
     /// Open a complete entry, refreshing its timestamp so pruning keeps it.
     fn load(&self, key: &str) -> Option<(SourceAudio, PeakCache)> {
         let meta_path = self.file(key, ".json");

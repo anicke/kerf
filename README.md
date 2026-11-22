@@ -56,6 +56,14 @@ Focused purely on editing: no plugins or effects, just careful, non-destructive 
   a project maps the cache directly, with no decoding. Playback renders about 0.25 s ahead on its
   own thread, so disk reads never reach the real-time audio thread, and stop, seek and edits still
   take effect at once.
+- **Crash recovery.** Unsaved work is snapshotted every minute (configurable). If Kerf doesn't close
+  normally, it offers to recover the work on the next start. Snapshots are tiny: audio is
+  referenced, and rendered audio stays in the cache.
+- **Markers panel** (*View → Markers panel*, Ctrl+Shift+M): every marker in a list. Jump to it,
+  rename it in place, select the song from one marker to the next, or delete it.
+- **Audio device and preferences** (*Edit → Preferences…*, Ctrl+,): output device, buffer size,
+  Space behaviour, preview length and recovery interval. Stored in the platform config folder
+  (`KERF_CONFIG_DIR` overrides it).
 - **Projects** (`.kerf`) are JSON plus references to your audio files. Rendered material is
   saved beside the project as 32-bit float WAV.
 
@@ -97,15 +105,23 @@ for trying song-start detection.
 
 | Key | Action | Key | Action |
 |---|---|---|---|
-| Space | Play / stop | S | Split at cursor (or selection edges) |
-| Del / ⌫ | Delete, close gap | Ctrl+L | Silence, keep gap |
-| Ctrl+X / C / V | Cut / copy / paste | Ctrl+T | Trim to selection |
-| Ctrl+Z / Ctrl+Shift+Z | Undo / redo | Ctrl+M | Normalize |
-| Ctrl+G | Gain | I / O | Fade in / out over selection |
-| Ctrl+R | Render track in place | M | Add marker |
-| , / . | Previous / next marker | + / − / Z | Zoom in / out / to selection |
-| Ctrl+F | Zoom to fit | L / N | Toggle loop / snap |
-| Ctrl+E | Export mix | Ctrl+Shift+E | Export split at markers |
+| Space | Play / stop (returns to start) | Shift+Space | Stop at the playhead |
+| P | Preview around the cursor | L | Toggle loop |
+| ← / → | Nudge cursor (skip 5 s while playing) | Shift+← / → | Extend selection |
+| Ctrl+← / → | Previous / next edit point (clip edge, marker) | Ctrl+Shift+← / → | Extend to edit point |
+| ↑ / ↓ | Previous / next track (Shift adds) | Home / End | Start / end (Shift extends) |
+| [ / ] | Selection start / end | PgUp / PgDn | Scroll a screen |
+| S | Split at cursor (or selection edges) | Del / ⌫ | Delete, close gap |
+| Ctrl+X / C / V | Cut / copy / paste | Ctrl+L | Silence, keep gap |
+| Ctrl+Z / Ctrl+Shift+Z | Undo / redo | Ctrl+T | Trim to selection |
+| Ctrl+M | Normalize | Ctrl+G | Gain |
+| I / O | Fade in / out over selection | Ctrl+R | Render track in place |
+| M | Add marker | , / . | Previous / next marker |
+| + / − / Z | Zoom in / out / to selection | Ctrl+F | Zoom to fit |
+| Ctrl+Shift+M | Markers panel | Ctrl+, | Preferences |
+| N | Toggle snap | Ctrl+E / Ctrl+Shift+E | Export mix / split at markers |
+
+Space and Shift+Space can be swapped in Preferences.
 
 Mouse: drag in a track to select time (across tracks). Drag a clip's title bar to move it, even to
 another track. Drag clip edges to trim. Drag the small squares at a clip's top corners to set its fades

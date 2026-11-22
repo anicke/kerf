@@ -190,6 +190,11 @@ impl Document {
         self.saved_revision = self.revision;
     }
 
+    /// Treat the current state as unsaved (e.g. work restored after a crash).
+    pub fn mark_unsaved(&mut self) {
+        self.saved_revision = u64::MAX;
+    }
+
     pub fn set_undo_limit(&mut self, limit: usize) {
         self.undo_limit = limit.max(1);
         while self.undo.len() > self.undo_limit {

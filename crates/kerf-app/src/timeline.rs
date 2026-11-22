@@ -244,6 +244,7 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
         pos2(full.right(), full.bottom() - SCROLLBAR_H),
     );
     app.view.lane_width = lanes.width().max(1.0);
+    app.view.lane_height = lanes.height().max(1.0);
     let n_tracks = app.project().tracks.len();
 
     // --- Scroll / zoom input --------------------------------------------------
@@ -560,7 +561,7 @@ fn lane_interaction(
                     let ti = geo.track_at_clamped(pos.y, n);
                     let (a, b) = (anchor.min(f), anchor.max(f));
                     app.sel.range = (b > a).then_some((a, b));
-                    app.cursor = a;
+                    app.cursor = f;
                     if n > 0 {
                         let (t0, t1) = (anchor_track.min(ti), anchor_track.max(ti));
                         app.sel.tracks = p.tracks[t0..=t1].iter().map(|t| t.id).collect();
@@ -817,7 +818,7 @@ fn ruler_interaction(
                     let (a, b) = (anchor.min(f), anchor.max(f));
                     app.sel.range = (b > a).then_some((a, b));
                     app.sel.tracks.clear();
-                    app.cursor = a;
+                    app.cursor = f;
                 }
                 _ => {}
             }

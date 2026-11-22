@@ -1808,10 +1808,14 @@ name = "kerf"
 version = "0.1.0"
 dependencies = [
  "cpal",
+ "dirs",
  "eframe",
  "kerf-core",
  "rfd",
  "rtrb",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

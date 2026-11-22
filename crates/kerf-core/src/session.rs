@@ -73,9 +73,15 @@ struct SourceEntry {
     id: SourceId,
     name: String,
     /// Relative to the project file's folder when possible.
+    #[serde(default)]
     path: PathBuf,
     /// Absolute fallback.
+    #[serde(default)]
     absolute_path: PathBuf,
+    /// Recovery files only: rendered audio still in the audio cache, mapped
+    /// directly instead of being written out as a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cache_key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -107,6 +113,18 @@ fn media_dir(project_path: &Path) -> PathBuf {
 /// Save the project. Sources referenced by clips that have no file yet are
 /// written to the media folder first.
 pub fn save(project: &Project, path: &Path) -> Result<()> {
+    save_impl(project, path, false)
+}
+
+/// Write a crash-recovery snapshot. Unlike [`save`] it never changes the
+/// project: rendered audio is referenced by its cache entry (no copying), and
+/// is only written out (to the snapshot's own media folder) when there is no
+/// cache. A later real save still puts rendered audio in the project's Media.
+pub fn save_recovery(project: &Project, path: &Path) -> Result<()> {
+    save_impl(project, path, true)
+}
+
+fn save_impl(project: &Project, path: &Path, recovery: bool) -> Result<()> {
     let base = path.parent().unwrap_or(Path::new("."));
     let used: std::collections::BTreeSet<SourceId> = project
         .tracks
@@ -117,6 +135,18 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
     let mut entries = Vec::new();
     for id in used {
         let src = project.sources.get(&id).ok_or(Error::NotFound("source"))?;
+        if recovery && src.path.get().is_none() {
+            if let Some(key) = src.audio.cache_key() {
+                entries.push(SourceEntry {
+                    id,
+                    name: src.name.clone(),
+                    path: PathBuf::new(),
+                    absolute_path: PathBuf::new(),
+                    cache_key: Some(key.to_string()),
+                });
+                continue;
+            }
+        }
         let file = match src.path.get() {
             Some(p) => p.clone(),
             None => {
@@ -132,7 +162,9 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
                         ..Default::default()
                     },
                 )?;
-                let _ = src.path.set(file.clone());
+                if !recovery {
+                    let _ = src.path.set(file.clone());
+                }
                 file
             }
         };
@@ -147,6 +179,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
             name: src.name.clone(),
             path: rel,
             absolute_path,
+            cache_key: None,
         });
     }
 
@@ -194,7 +227,7 @@ pub fn load(path: &Path, cache: Option<Arc<AudioCache>>) -> Result<Project> {
         }
     };
 
-    type Loaded = (SourceEntry, PathBuf, SourceAudio, PeakCache);
+    type Loaded = (SourceEntry, Option<PathBuf>, SourceAudio, PeakCache);
     let decoded: Vec<Result<Loaded>> = std::thread::scope(|s| {
         let handles: Vec<_> = file
             .sources
@@ -203,8 +236,19 @@ pub fn load(path: &Path, cache: Option<Arc<AudioCache>>) -> Result<Project> {
                 let p = resolve(&e);
                 let rate = file.sample_rate;
                 let cache = cache.as_deref();
-                s.spawn(move || {
-                    prepare_audio(cache, &p, Some(rate), &mut |_| true).map(|(a, pk)| (e, p, a, pk))
+                s.spawn(move || -> Result<Loaded> {
+                    // Rendered audio from a recovery file: straight from the cache.
+                    if let Some(key) = &e.cache_key {
+                        return match cache.and_then(|c| c.open_entry(key)) {
+                            Some((a, pk)) => Ok((e, None, a, pk)),
+                            None => Err(Error::ProjectFormat(format!(
+                                "rendered audio \"{}\" is no longer in the audio cache",
+                                e.name
+                            ))),
+                        };
+                    }
+                    prepare_audio(cache, &p, Some(rate), &mut |_| true)
+                        .map(|(a, pk)| (e, Some(p), a, pk))
                 })
             })
             .collect();
@@ -223,7 +267,7 @@ pub fn load(path: &Path, cache: Option<Arc<AudioCache>>) -> Result<Project> {
         project.ids.ensure_above(e.id.0);
         project.sources.insert(
             e.id,
-            Arc::new(Source::with_peaks(e.id, e.name, Some(p), audio, peaks)),
+            Arc::new(Source::with_peaks(e.id, e.name, p, audio, peaks)),
         );
     }
     for t in &file.tracks {
@@ -323,5 +367,49 @@ mod tests {
         let t = import_file(&mut p, &wav, 0).unwrap();
         assert_eq!(p.sample_rate, 48_000);
         assert_eq!(p.track(t).unwrap().end(), 48_000);
+    }
+
+    #[test]
+    fn recovery_snapshot_maps_rendered_audio_and_leaves_project_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(AudioCache::open(dir.path().join("cache")).unwrap());
+        let wav = dir.path().join("in.wav");
+        let data: Vec<f32> = (0..9600).map(|i| ((i as f32) * 0.02).sin()).collect();
+        io::write_wav(
+            &wav,
+            &AudioBuffer::new(48_000, vec![data]),
+            ExportSettings::default(),
+        )
+        .unwrap();
+        let mut p = Project::new(48_000, 1);
+        p.cache = Some(cache.clone());
+        let t = import_file(&mut p, &wav, 0).unwrap();
+        edit::fade_in(&mut p, &[t], 0, 2000, crate::FadeShape::Linear).unwrap();
+        let rendered = edit::bounce_track(&mut p, t, None).unwrap();
+
+        let snap = dir.path().join("recovery").join("snap.kerf");
+        fs::create_dir_all(snap.parent().unwrap()).unwrap();
+        save_recovery(&p, &snap).unwrap();
+        assert!(
+            !dir.path().join("recovery").join("snap Media").exists(),
+            "nothing copied"
+        );
+        assert!(
+            p.sources[&rendered].path.get().is_none(),
+            "project unchanged by the snapshot"
+        );
+
+        let q = load(&snap, Some(cache)).unwrap();
+        assert!(
+            q.sources[&rendered].path.get().is_none(),
+            "still unsaved after recovery"
+        );
+        let o = RenderOptions::default();
+        assert_eq!(render(&q, 0, 9600, &o), render(&p, 0, 9600, &o));
+
+        // A real save afterwards writes the rendered audio into the project's Media.
+        let real = dir.path().join("real.kerf");
+        save(&q, &real).unwrap();
+        assert!(dir.path().join("real Media").is_dir());
     }
 }

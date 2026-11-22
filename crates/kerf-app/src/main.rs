@@ -4,6 +4,10 @@ mod app;
 mod audio;
 mod detect_ui;
 mod jobs;
+mod markers_panel;
+mod nav;
+mod prefs;
+mod recovery;
 mod timeline;
 
 fn main() -> eframe::Result {

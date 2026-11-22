@@ -86,6 +86,30 @@ pub struct Player {
     stream_project_rate: u32,
     pub device_rate: u32,
     pub device_name: String,
+    /// Chosen output device id (`None`: system default).
+    device_id: Option<String>,
+    /// Chosen buffer size in frames (`None`: device default).
+    buffer_frames: Option<u32>,
+    /// Set when the chosen device or buffer could not be used.
+    pub fallback_note: Option<String>,
+}
+
+/// Output devices as `(id, description)`.
+pub fn output_devices() -> Vec<(String, String)> {
+    let host = cpal::default_host();
+    let Ok(devices) = host.output_devices() else {
+        return Vec::new();
+    };
+    devices
+        .filter_map(|d| {
+            let id = d.id().ok()?.to_string();
+            let name = d
+                .description()
+                .map(|x| x.to_string())
+                .unwrap_or_else(|_| id.clone());
+            Some((id, name))
+        })
+        .collect()
 }
 
 impl Default for Player {
@@ -97,11 +121,43 @@ impl Default for Player {
             stream_project_rate: 0,
             device_rate: 0,
             device_name: String::new(),
+            device_id: None,
+            buffer_frames: None,
+            fallback_note: None,
         }
     }
 }
 
 impl Player {
+    /// Start the feeder thread and the device stream.
+    fn open_stream(
+        &self,
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        format: cpal::SampleFormat,
+    ) -> Result<(cpal::Stream, Sender<Cmd>), String> {
+        let (tx, rx) = channel();
+        let (feeder, output) = pipeline(
+            rx,
+            self.shared.clone(),
+            config.sample_rate,
+            config.channels as usize,
+        );
+        let stream = match format {
+            cpal::SampleFormat::F32 => build::<f32>(device, config, output),
+            cpal::SampleFormat::I16 => build::<i16>(device, config, output),
+            cpal::SampleFormat::I32 => build::<i32>(device, config, output),
+            cpal::SampleFormat::U16 => build::<u16>(device, config, output),
+            cpal::SampleFormat::F64 => build::<f64>(device, config, output),
+            other => return Err(format!("Unsupported device sample format {other}")),
+        }?;
+        std::thread::Builder::new()
+            .name("kerf-playback-feeder".into())
+            .spawn(move || feeder.run())
+            .map_err(|e| e.to_string())?;
+        Ok((stream, tx))
+    }
+
     pub fn is_playing(&self) -> bool {
         self.shared.playing.load(Ordering::Relaxed)
     }
@@ -174,6 +230,17 @@ impl Player {
         }
     }
 
+    /// Choose the output device and buffer size; takes effect on the next play.
+    pub fn configure(&mut self, device_id: Option<String>, buffer_frames: Option<u32>) {
+        if self.device_id != device_id || self.buffer_frames != buffer_frames {
+            self.stop();
+            self.device_id = device_id;
+            self.buffer_frames = buffer_frames;
+            self.stream = None;
+            self.tx = None;
+        }
+    }
+
     fn ensure_stream(&mut self, project_rate: u32) -> Result<(), String> {
         if self.stream.is_some() && self.tx.is_some() && self.stream_project_rate == project_rate {
             return Ok(());
@@ -181,9 +248,22 @@ impl Player {
         self.stream = None;
         self.tx = None; // ends the old feeder thread
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or("No audio output device found")?;
+        self.fallback_note = None;
+        let chosen = self
+            .device_id
+            .as_deref()
+            .and_then(|id| id.parse::<cpal::DeviceId>().ok())
+            .and_then(|id| host.device_by_id(&id));
+        if self.device_id.is_some() && chosen.is_none() {
+            self.fallback_note =
+                Some("Chosen output device not found; using the system default".into());
+        }
+        let device = match chosen {
+            Some(d) => d,
+            None => host
+                .default_output_device()
+                .ok_or("No audio output device found")?,
+        };
         self.device_name = device
             .description()
             .map(|d| d.to_string())
@@ -207,24 +287,22 @@ impl Player {
             None => device.default_output_config().map_err(|e| e.to_string())?,
         };
         let format = config.sample_format();
-        let config: cpal::StreamConfig = config.into();
-        let channels = config.channels as usize;
-
-        let (tx, rx) = channel();
-        let (feeder, output) = pipeline(rx, self.shared.clone(), config.sample_rate, channels);
-        std::thread::Builder::new()
-            .name("kerf-playback-feeder".into())
-            .spawn(move || feeder.run())
-            .map_err(|e| e.to_string())?;
-
-        let stream = match format {
-            cpal::SampleFormat::F32 => build::<f32>(&device, &config, output),
-            cpal::SampleFormat::I16 => build::<i16>(&device, &config, output),
-            cpal::SampleFormat::I32 => build::<i32>(&device, &config, output),
-            cpal::SampleFormat::U16 => build::<u16>(&device, &config, output),
-            cpal::SampleFormat::F64 => build::<f64>(&device, &config, output),
-            other => return Err(format!("Unsupported device sample format {other}")),
-        }?;
+        let mut config: cpal::StreamConfig = config.into();
+        if let Some(n) = self.buffer_frames {
+            config.buffer_size = cpal::BufferSize::Fixed(n);
+        }
+        let (stream, tx) = match self.open_stream(&device, &config, format) {
+            Ok(ok) => ok,
+            Err(e) if self.buffer_frames.is_some() => {
+                // Not every device accepts every buffer size: fall back.
+                config.buffer_size = cpal::BufferSize::Default;
+                self.fallback_note = Some(format!(
+                    "Buffer size not supported ({e}); using the device default"
+                ));
+                self.open_stream(&device, &config, format)?
+            }
+            Err(e) => return Err(e),
+        };
         stream.play().map_err(|e| e.to_string())?;
         self.stream = Some(stream);
         self.tx = Some(tx);

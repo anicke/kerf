@@ -1,0 +1,80 @@
+//! User preferences, stored as JSON in the platform config folder
+//! (`~/.config/kerf/preferences.json` on Linux). `KERF_CONFIG_DIR` overrides it.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    /// Output device id (`None`: the system default).
+    pub output_device: Option<String>,
+    /// Device buffer size in frames (`None`: the device default).
+    pub buffer_frames: Option<u32>,
+    /// Space stops and returns to where playback started (otherwise it stops
+    /// at the playhead). Shift+Space always does the opposite.
+    pub space_returns_to_start: bool,
+    /// Preview around the cursor (P): seconds before and after.
+    pub preview_before: f64,
+    pub preview_after: f64,
+    /// Crash-recovery snapshot interval in seconds (0 turns it off).
+    pub autosave_secs: u64,
+    pub show_markers_panel: bool,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            output_device: None,
+            buffer_frames: None,
+            space_returns_to_start: true,
+            preview_before: 2.0,
+            preview_after: 2.0,
+            autosave_secs: 60,
+            show_markers_panel: false,
+        }
+    }
+}
+
+fn path() -> Option<PathBuf> {
+    let dir = match std::env::var_os("KERF_CONFIG_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => dirs::config_dir()?.join("kerf"),
+    };
+    Some(dir.join("preferences.json"))
+}
+
+impl Prefs {
+    /// Load saved preferences (defaults if none or unreadable).
+    pub fn load() -> Self {
+        path()
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let Some(p) = path() else { return Ok(()) };
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let json = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        std::fs::write(p, json)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_fields_take_defaults() {
+        let p: Prefs = serde_json::from_str(r#"{"preview_before": 1.5}"#).unwrap();
+        assert_eq!(p.preview_before, 1.5);
+        assert_eq!(p.autosave_secs, 60);
+        assert!(p.space_returns_to_start);
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert_eq!(back, p);
+    }
+}

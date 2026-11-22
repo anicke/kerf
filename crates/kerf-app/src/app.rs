@@ -36,6 +36,8 @@ pub struct View {
     pub snap: bool,
     /// Lane width in points, measured each frame.
     pub lane_width: f32,
+    /// Height of the track area in points, measured each frame.
+    pub lane_height: f32,
 }
 
 impl Default for View {
@@ -48,6 +50,7 @@ impl Default for View {
             follow: true,
             snap: true,
             lane_width: 1000.0,
+            lane_height: 400.0,
         }
     }
 }
@@ -103,7 +106,15 @@ pub enum Dialog {
     ConfirmDiscard(Pending),
     AudioCache(CacheView),
     DetectSongs(Box<crate::detect_ui::DetectState>),
+    Preferences(Box<PrefsDraft>),
+    Recover(Vec<crate::recovery::Orphan>),
     About,
+}
+
+/// Preferences being edited, plus the devices available to choose from.
+pub struct PrefsDraft {
+    prefs: crate::prefs::Prefs,
+    devices: Vec<(String, String)>,
 }
 
 /// Snapshot shown in the Audio Cache dialog.
@@ -153,6 +164,28 @@ pub enum Action {
     AddTrack,
     RemoveTracks,
     PlayStop,
+    StopAtPlayhead,
+    PreviewCursor,
+    CursorLeft,
+    CursorRight,
+    ExtendLeft,
+    ExtendRight,
+    PrevEditPoint,
+    NextEditPoint,
+    ExtendPrevEditPoint,
+    ExtendNextEditPoint,
+    TrackUp,
+    TrackDown,
+    ExtendTrackUp,
+    ExtendTrackDown,
+    PageLeft,
+    PageRight,
+    GoSelectionStart,
+    GoSelectionEnd,
+    ExtendToStart,
+    ExtendToEnd,
+    ToggleMarkersPanel,
+    Preferences,
     GoStart,
     GoEnd,
     ZoomIn,
@@ -192,6 +225,8 @@ pub struct KerfApp {
     title: String,
     allow_close: bool,
     screenshot: Option<ScreenshotHook>,
+    pub prefs: crate::prefs::Prefs,
+    recovery: Option<crate::recovery::Recovery>,
 }
 
 impl KerfApp {
@@ -248,7 +283,20 @@ impl KerfApp {
                 frames: 0,
                 done: Default::default(),
             }),
+            prefs: crate::prefs::Prefs::load(),
+            recovery: None,
         };
+        app.player
+            .configure(app.prefs.output_device.clone(), app.prefs.buffer_frames);
+        app.recovery = crate::recovery::Recovery::new(app.prefs.autosave_secs);
+        let orphans = app
+            .recovery
+            .as_ref()
+            .map(|r| r.orphans())
+            .unwrap_or_default();
+        if !orphans.is_empty() {
+            app.dialog = Some(Dialog::Recover(orphans));
+        }
         app.open_paths(ctx, files);
         app
     }
@@ -557,6 +605,143 @@ impl KerfApp {
                 self.edit("Remove tracks", |p| edit::remove_tracks(p, &tracks));
             }
             PlayStop => self.play_stop(),
+            StopAtPlayhead => {
+                if self.player.is_playing() {
+                    // The opposite of what Space does.
+                    if self.prefs.space_returns_to_start {
+                        self.stop_at_playhead();
+                    } else {
+                        self.player.stop();
+                    }
+                } else {
+                    self.play_stop();
+                }
+            }
+            PreviewCursor => {
+                let sr = self.project().sample_rate as f64;
+                let before = (self.prefs.preview_before * sr) as Frame;
+                let after = (self.prefs.preview_after * sr) as Frame;
+                let end = (self.cursor + after).min(self.project().length());
+                let start = self.cursor.saturating_sub(before);
+                if end > start {
+                    self.start_playback(start, end, None);
+                }
+            }
+            CursorLeft | CursorRight => {
+                let forward = action == CursorRight;
+                if self.player.is_playing() {
+                    // While playing, arrows skip 5 seconds.
+                    let jump = self.project().sample_rate as Frame * 5;
+                    let pos = self.player.position();
+                    self.seek(if forward {
+                        pos + jump
+                    } else {
+                        pos.saturating_sub(jump)
+                    });
+                } else {
+                    let step = crate::nav::nudge_step(self.view.spp);
+                    let to = if forward {
+                        self.cursor + step
+                    } else {
+                        self.cursor.saturating_sub(step)
+                    };
+                    self.sel.range = None;
+                    self.cursor = to;
+                    self.ensure_visible(to);
+                }
+            }
+            ExtendLeft | ExtendRight => {
+                let step = crate::nav::nudge_step(self.view.spp);
+                let to = if action == ExtendRight {
+                    self.cursor + step
+                } else {
+                    self.cursor.saturating_sub(step)
+                };
+                self.extend_selection(to);
+            }
+            PrevEditPoint | NextEditPoint | ExtendPrevEditPoint | ExtendNextEditPoint => {
+                let edges: Vec<Frame> = self.sel.range.map(|(a, b)| vec![a, b]).unwrap_or_default();
+                let points = crate::nav::edit_points(self.project(), &edges);
+                let from = if self.player.is_playing() {
+                    self.player.position()
+                } else {
+                    self.cursor
+                };
+                let target = if matches!(action, PrevEditPoint | ExtendPrevEditPoint) {
+                    crate::nav::prev_point(&points, from)
+                } else {
+                    crate::nav::next_point(&points, from)
+                };
+                if let Some(t) = target {
+                    if matches!(action, ExtendPrevEditPoint | ExtendNextEditPoint) {
+                        self.extend_selection(t);
+                    } else {
+                        self.sel.range = None;
+                        self.seek(t);
+                        self.ensure_visible(t);
+                    }
+                }
+            }
+            TrackUp | TrackDown | ExtendTrackUp | ExtendTrackDown => {
+                let n = self.project().tracks.len();
+                if n > 0 {
+                    let up = matches!(action, TrackUp | ExtendTrackUp);
+                    let current = self
+                        .sel
+                        .tracks
+                        .last()
+                        .and_then(|t| self.project().track_index(*t));
+                    let i = match current {
+                        Some(i) if up => i.saturating_sub(1),
+                        Some(i) => (i + 1).min(n - 1),
+                        None if up => n - 1,
+                        None => 0,
+                    };
+                    let id = self.project().tracks[i].id;
+                    if matches!(action, ExtendTrackUp | ExtendTrackDown) {
+                        self.sel.tracks.retain(|t| *t != id);
+                        self.sel.tracks.push(id);
+                    } else {
+                        self.sel.tracks = vec![id];
+                    }
+                    // Keep the track in view.
+                    let top = i as f32 * self.view.track_height;
+                    if top < self.view.vscroll {
+                        self.view.vscroll = top;
+                    } else if top + self.view.track_height
+                        > self.view.vscroll + self.view.lane_height
+                    {
+                        self.view.vscroll = top + self.view.track_height - self.view.lane_height;
+                    }
+                }
+            }
+            PageLeft => {
+                self.view.scroll = (self.view.scroll - self.view.visible_frames() * 0.9).max(0.0)
+            }
+            PageRight => self.view.scroll += self.view.visible_frames() * 0.9,
+            GoSelectionStart | GoSelectionEnd => match self.sel.range {
+                Some((a, b)) => {
+                    let to = if action == GoSelectionStart { a } else { b };
+                    self.cursor = to;
+                    self.ensure_visible(to);
+                }
+                None => self.info("No selection"),
+            },
+            ExtendToStart => self.extend_selection(0),
+            ExtendToEnd => {
+                let end = self.project().length();
+                self.extend_selection(end);
+            }
+            ToggleMarkersPanel => {
+                self.prefs.show_markers_panel = !self.prefs.show_markers_panel;
+                let _ = self.prefs.save();
+            }
+            Preferences => {
+                self.dialog = Some(Dialog::Preferences(Box::new(PrefsDraft {
+                    prefs: self.prefs.clone(),
+                    devices: crate::audio::output_devices(),
+                })));
+            }
             GoStart => self.seek(0),
             GoEnd => {
                 let end = self.project().length();
@@ -604,7 +789,11 @@ impl KerfApp {
 
     pub fn play_stop(&mut self) {
         if self.player.is_playing() {
-            self.player.stop();
+            if self.prefs.space_returns_to_start {
+                self.player.stop();
+            } else {
+                self.stop_at_playhead();
+            }
             return;
         }
         let len = self.project().length();
@@ -628,6 +817,57 @@ impl KerfApp {
         if let Err(e) = self.player.play(snapshot, start, end, loop_start) {
             self.error(format!("Playback failed: {e}"));
         }
+    }
+
+    /// Stop and leave the cursor where playback was.
+    fn stop_at_playhead(&mut self) {
+        let pos = self.player.position();
+        self.player.stop();
+        self.cursor = pos;
+        self.ensure_visible(pos);
+    }
+
+    /// Scroll so `frame` is on screen (if it isn't already).
+    pub fn ensure_visible(&mut self, frame: Frame) {
+        let visible = self.view.visible_frames();
+        let f = frame as f64;
+        if f < self.view.scroll || f > self.view.scroll + visible {
+            self.view.scroll = (f - visible * 0.1).max(0.0);
+        }
+    }
+
+    /// Move the selection's moving edge (the cursor) to `to`.
+    fn extend_selection(&mut self, to: Frame) {
+        // Don't extend past the end of the project (unless already beyond it).
+        let to = to.min(self.project().length().max(self.cursor));
+        let (range, cursor) = crate::nav::extend(self.sel.range, self.cursor, to);
+        self.sel.range = range;
+        self.cursor = cursor;
+        self.ensure_visible(cursor);
+    }
+
+    fn apply_prefs(&mut self, new: crate::prefs::Prefs) {
+        self.player
+            .configure(new.output_device.clone(), new.buffer_frames);
+        if let Some(r) = &mut self.recovery {
+            r.set_interval(new.autosave_secs);
+        }
+        self.prefs = new;
+        match self.prefs.save() {
+            Ok(()) => self.info("Preferences saved"),
+            Err(e) => self.error(format!("Could not save preferences: {e}")),
+        }
+    }
+
+    fn recover(&mut self, ctx: &egui::Context, orphan: crate::recovery::Orphan) {
+        if self.busy() {
+            return;
+        }
+        let cache = self.cache.clone();
+        self.job = Some(Job::spawn(ctx, "Recovering unsaved work…", move |_| {
+            let r = session::load(&orphan.snapshot, cache).map_err(|e| e.to_string());
+            JobDone::Recovered(orphan, r)
+        }));
     }
 
     /// Move the cursor; if playing, continue playing from there.
@@ -937,6 +1177,20 @@ impl KerfApp {
                     self.error(errors.join("; "));
                 }
             }
+            JobDone::Recovered(orphan, r) => match r {
+                Ok(project) => {
+                    self.player.stop();
+                    self.doc = Document::new(project);
+                    self.doc.path = orphan.original.clone();
+                    self.doc.mark_unsaved();
+                    self.sel = Selection::default();
+                    self.cursor = 0;
+                    orphan.discard();
+                    self.perform(ctx, Action::ZoomFit);
+                    self.info("Recovered unsaved work. Save it to keep it.");
+                }
+                Err(e) => self.error(format!("Could not recover: {e}")),
+            },
             JobDone::Loaded(path, r) => match r {
                 Ok(project) => {
                     self.player.stop();
@@ -978,7 +1232,14 @@ impl KerfApp {
         let cmd = Modifiers::COMMAND;
         let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
         // More specific shortcuts first: consume_shortcut ignores extra Shift.
+        let shift = Modifiers::SHIFT;
         let table: &[(Modifiers, Key, Action)] = &[
+            (cmd_shift, Key::ArrowLeft, Action::ExtendPrevEditPoint),
+            (cmd_shift, Key::ArrowRight, Action::ExtendNextEditPoint),
+            (cmd_shift, Key::M, Action::ToggleMarkersPanel),
+            (cmd, Key::ArrowLeft, Action::PrevEditPoint),
+            (cmd, Key::ArrowRight, Action::NextEditPoint),
+            (cmd, Key::Comma, Action::Preferences),
             (cmd_shift, Key::Z, Action::Redo),
             (cmd_shift, Key::S, Action::SaveAs),
             (cmd_shift, Key::E, Action::Export(ExportKind::Markers)),
@@ -1002,7 +1263,23 @@ impl KerfApp {
             (cmd, Key::C, Action::Copy),
             (cmd, Key::X, Action::Cut),
             (cmd, Key::V, Action::Paste),
+            (shift, Key::ArrowLeft, Action::ExtendLeft),
+            (shift, Key::ArrowRight, Action::ExtendRight),
+            (shift, Key::ArrowUp, Action::ExtendTrackUp),
+            (shift, Key::ArrowDown, Action::ExtendTrackDown),
+            (shift, Key::Home, Action::ExtendToStart),
+            (shift, Key::End, Action::ExtendToEnd),
+            (shift, Key::Space, Action::StopAtPlayhead),
             (Modifiers::NONE, Key::Space, Action::PlayStop),
+            (Modifiers::NONE, Key::ArrowLeft, Action::CursorLeft),
+            (Modifiers::NONE, Key::ArrowRight, Action::CursorRight),
+            (Modifiers::NONE, Key::ArrowUp, Action::TrackUp),
+            (Modifiers::NONE, Key::ArrowDown, Action::TrackDown),
+            (Modifiers::NONE, Key::PageUp, Action::PageLeft),
+            (Modifiers::NONE, Key::PageDown, Action::PageRight),
+            (Modifiers::NONE, Key::OpenBracket, Action::GoSelectionStart),
+            (Modifiers::NONE, Key::CloseBracket, Action::GoSelectionEnd),
+            (Modifiers::NONE, Key::P, Action::PreviewCursor),
             (Modifiers::NONE, Key::S, Action::Split),
             (Modifiers::NONE, Key::M, Action::AddMarker),
             (Modifiers::NONE, Key::L, Action::ToggleLoop),
@@ -1158,6 +1435,8 @@ impl KerfApp {
                 ui.separator();
                 item(ui, "Select All", "Ctrl+A", Action::SelectAll, &mut act);
                 item(ui, "Select None", "Esc", Action::SelectNone, &mut act);
+                ui.separator();
+                item(ui, "Preferences…", "Ctrl+,", Action::Preferences, &mut act);
             });
             ui.menu_button("Process", |ui| {
                 item(ui, "Normalize…", "Ctrl+M", Action::Normalize, &mut act);
@@ -1214,6 +1493,66 @@ impl KerfApp {
                     }
                 }
             });
+            ui.menu_button("Transport", |ui| {
+                let space = if self.prefs.space_returns_to_start {
+                    "Play / Stop"
+                } else {
+                    "Play / Stop at Playhead"
+                };
+                let shift_space = if self.prefs.space_returns_to_start {
+                    "Stop at Playhead"
+                } else {
+                    "Stop and Return"
+                };
+                item(ui, space, "Space", Action::PlayStop, &mut act);
+                item(
+                    ui,
+                    shift_space,
+                    "Shift+Space",
+                    Action::StopAtPlayhead,
+                    &mut act,
+                );
+                item(
+                    ui,
+                    "Preview Around Cursor",
+                    "P",
+                    Action::PreviewCursor,
+                    &mut act,
+                );
+                ui.separator();
+                item(ui, "Go to Start", "Home", Action::GoStart, &mut act);
+                item(ui, "Go to End", "End", Action::GoEnd, &mut act);
+                item(
+                    ui,
+                    "Previous Edit Point",
+                    "Ctrl+←",
+                    Action::PrevEditPoint,
+                    &mut act,
+                );
+                item(
+                    ui,
+                    "Next Edit Point",
+                    "Ctrl+→",
+                    Action::NextEditPoint,
+                    &mut act,
+                );
+                item(
+                    ui,
+                    "Go to Selection Start",
+                    "[",
+                    Action::GoSelectionStart,
+                    &mut act,
+                );
+                item(
+                    ui,
+                    "Go to Selection End",
+                    "]",
+                    Action::GoSelectionEnd,
+                    &mut act,
+                );
+                ui.separator();
+                ui.checkbox(&mut self.loop_playback, "Loop (L)");
+            });
             ui.menu_button("Markers", |ui| {
                 item(ui, "Add Marker", "M", Action::AddMarker, &mut act);
                 item(ui, "Previous Marker", ",", Action::PrevMarker, &mut act);
@@ -1247,6 +1586,15 @@ impl KerfApp {
                 ui.separator();
                 ui.checkbox(&mut self.view.snap, "Snap to edges & markers");
                 ui.checkbox(&mut self.view.follow, "Follow playhead");
+                if ui
+                    .checkbox(
+                        &mut self.prefs.show_markers_panel,
+                        "Markers panel (Ctrl+Shift+M)",
+                    )
+                    .changed()
+                {
+                    let _ = self.prefs.save();
+                }
                 ui.add(
                     egui::Slider::new(&mut self.view.track_height, 60.0..=400.0)
                         .text("Track height"),
@@ -1354,6 +1702,9 @@ impl KerfApp {
                 ui.label(egui::RichText::new(msg).color(color));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(note) = &self.player.fallback_note {
+                    ui.colored_label(ui.visuals().warn_fg_color, note);
+                }
                 if !self.player.device_name.is_empty() {
                     let dev = &self.player.device_name;
                     let rate = self.player.device_rate;
@@ -1387,6 +1738,8 @@ impl KerfApp {
             Dialog::ConfirmDiscard(_) => "Unsaved Changes",
             Dialog::AudioCache(_) => "Audio Cache",
             Dialog::DetectSongs(_) => "Detect Song Starts",
+            Dialog::Preferences(_) => "Preferences",
+            Dialog::Recover(_) => "Recover Unsaved Work",
             Dialog::About => "About Kerf",
         };
         let scope = match self.sel.range.filter(|(a, b)| b > a) {
@@ -1582,6 +1935,52 @@ impl KerfApp {
                             close = true;
                         }
                     });
+                }
+                Dialog::Preferences(draft) => {
+                    prefs_ui(ui, draft, self.player.fallback_note.as_deref());
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("OK").clicked() {
+                            let new = draft.prefs.clone();
+                            run = Some(Box::new(move |app, _| app.apply_prefs(new)));
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+                Dialog::Recover(orphans) => {
+                    ui.label("Kerf didn't close normally last time. This unsaved work can be recovered:");
+                    ui.add_space(4.0);
+                    let mut recover = None;
+                    let mut discard = None;
+                    for (i, o) in orphans.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(o.title()).strong());
+                            ui.label(egui::RichText::new(ago(o.saved_at)).weak());
+                            if ui.button("Recover").clicked() {
+                                recover = Some(i);
+                            }
+                            if ui.button("Discard").clicked() {
+                                discard = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = discard {
+                        orphans.remove(i).discard();
+                    }
+                    if let Some(i) = recover {
+                        let o = orphans.remove(i);
+                        run = Some(Box::new(move |app, ctx| app.recover(ctx, o)));
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("“Later” keeps them; you'll be asked again next time Kerf starts.").weak().small(),
+                    );
+                    if ui.button("Later").clicked() || orphans.is_empty() {
+                        close = true;
+                    }
                 }
                 Dialog::DetectSongs(state) => {
                     use crate::detect_ui::Outcome;
@@ -1806,12 +2205,16 @@ impl eframe::App for KerfApp {
         let ctx = ui.ctx().clone();
 
         // Close requests (window X) go through the unsaved-changes check.
-        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close {
-            if self.doc.is_dirty() && !self.project().tracks.is_empty() {
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if !self.allow_close && self.doc.is_dirty() && !self.project().tracks.is_empty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.dialog = Some(Dialog::ConfirmDiscard(Pending::Quit));
             } else {
+                // A clean exit: nothing to recover next time.
                 self.player.stop();
+                if let Some(r) = &mut self.recovery {
+                    r.clear();
+                }
             }
         }
 
@@ -1848,6 +2251,12 @@ impl eframe::App for KerfApp {
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        if self.prefs.show_markers_panel {
+            egui::Panel::right("markers")
+                .resizable(true)
+                .default_size(340.0)
+                .show(ui, |ui| crate::markers_panel::show(self, ui));
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
             .show(ui, |ui| crate::timeline::show(self, ui));
@@ -1856,6 +2265,12 @@ impl eframe::App for KerfApp {
         self.job_window(&ctx);
         self.update_title(&ctx);
         self.screenshot_hook(&ctx);
+        if let Some(r) = &mut self.recovery {
+            r.tick(&self.doc);
+            if self.prefs.autosave_secs > 0 {
+                ctx.request_repaint_after(std::time::Duration::from_secs(self.prefs.autosave_secs));
+            }
+        }
 
         // Finish coalesced gestures (fader drags, name edits) once input settles.
         if !ctx.input(|i| i.pointer.any_down()) && !ctx.egui_wants_keyboard_input() {
@@ -1892,6 +2307,17 @@ impl KerfApp {
                 Ok("cache") => Some(Action::AudioCache),
                 Ok("detect") => Some(Action::DetectSongs),
                 Ok("split") => Some(Action::Export(ExportKind::Markers)),
+                Ok("prefs") => Some(Action::Preferences),
+                Ok("recover") => {
+                    if let Some(Dialog::Recover(orphans)) = &mut self.dialog {
+                        let o = orphans.remove(0);
+                        self.dialog = None;
+                        hook.frames += 1;
+                        self.recover(ctx, o);
+                        return;
+                    }
+                    None
+                }
                 Ok("split-cd") => {
                     self.export_settings = ExportSettings::AUDIO_CD;
                     Some(Action::Export(ExportKind::Markers))
@@ -2088,6 +2514,120 @@ fn export_settings_ui(
     }
 }
 
+/// The Preferences form.
+fn prefs_ui(ui: &mut egui::Ui, draft: &mut PrefsDraft, fallback_note: Option<&str>) {
+    let p = &mut draft.prefs;
+    ui.heading("Audio");
+    egui::Grid::new("prefs-audio")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Output device");
+            let current = match &p.output_device {
+                None => "System default".to_string(),
+                Some(id) => draft
+                    .devices
+                    .iter()
+                    .find(|(d, _)| d == id)
+                    .map_or_else(|| format!("{id} (not connected)"), |(_, name)| name.clone()),
+            };
+            egui::ComboBox::from_id_salt("device")
+                .selected_text(current)
+                .width(280.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut p.output_device, None, "System default");
+                    for (id, name) in &draft.devices {
+                        ui.selectable_value(&mut p.output_device, Some(id.clone()), name);
+                    }
+                });
+            ui.end_row();
+            ui.label("Buffer size");
+            let label =
+                |b: Option<u32>| b.map_or("Device default".to_string(), |n| format!("{n} frames"));
+            egui::ComboBox::from_id_salt("buffer")
+                .selected_text(label(p.buffer_frames))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut p.buffer_frames, None, label(None));
+                    for n in [128u32, 256, 512, 1024, 2048] {
+                        ui.selectable_value(&mut p.buffer_frames, Some(n), label(Some(n)));
+                    }
+                });
+            ui.end_row();
+        });
+    ui.label(
+        egui::RichText::new(
+            "Smaller buffers respond faster; larger ones are safer on busy systems.",
+        )
+        .weak()
+        .small(),
+    );
+    if let Some(note) = fallback_note {
+        ui.colored_label(ui.visuals().warn_fg_color, note);
+    }
+
+    ui.separator();
+    ui.heading("Playback");
+    ui.checkbox(
+        &mut p.space_returns_to_start,
+        "Space stops and returns to where playback started",
+    );
+    ui.label(
+        egui::RichText::new(if p.space_returns_to_start {
+            "Shift+Space stops at the playhead instead."
+        } else {
+            "Space stops at the playhead; Shift+Space returns to the start."
+        })
+        .weak()
+        .small(),
+    );
+    ui.horizontal(|ui| {
+        ui.label("Preview around cursor (P):");
+        ui.add(
+            egui::DragValue::new(&mut p.preview_before)
+                .range(0.0..=30.0)
+                .speed(0.1)
+                .suffix(" s before"),
+        );
+        ui.add(
+            egui::DragValue::new(&mut p.preview_after)
+                .range(0.0..=30.0)
+                .speed(0.1)
+                .suffix(" s after"),
+        );
+    });
+
+    ui.separator();
+    ui.heading("Recovery");
+    ui.horizontal(|ui| {
+        ui.label("Save recovery snapshots of unsaved work");
+        let label = |s: u64| match s {
+            0 => "Off".to_string(),
+            s if s < 60 => format!("every {s} s"),
+            s => format!("every {} min", s / 60),
+        };
+        egui::ComboBox::from_id_salt("autosave")
+            .selected_text(label(p.autosave_secs))
+            .show_ui(ui, |ui| {
+                for s in [0u64, 30, 60, 300] {
+                    ui.selectable_value(&mut p.autosave_secs, s, label(s));
+                }
+            });
+    });
+}
+
+/// "5 minutes ago" style description.
+fn ago(t: std::time::SystemTime) -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(t)
+        .map_or(0, |d| d.as_secs());
+    match secs {
+        0..=89 => "just now".into(),
+        90..=5399 => format!("{} minutes ago", (secs + 30) / 60),
+        5400..=172_799 => format!("{} hours ago", (secs + 1800) / 3600),
+        _ => format!("{} days ago", secs / 86_400),
+    }
+}
+
 /// The CD-safe option with a live count of sector boundary errors.
 fn cd_safe_ui(ui: &mut egui::Ui, p: &Project, cd_safe: &mut bool, out_rate: u32) {
     let Some(sector) = render::sector_len(p.sample_rate) else {
@@ -2200,18 +2740,22 @@ fn meter(ui: &mut egui::Ui, levels: [f32; 2], channels: u16) {
 }
 
 const SHORTCUT_HELP: &str = "\
-Space        play / stop          S       split at cursor
-Del / ⌫      delete (close gap)   Ctrl+L  silence (keep gap)
-Ctrl+X/C/V   cut / copy / paste   Ctrl+T  trim to selection
-Ctrl+Z       undo                 Ctrl+⇧Z redo
-Ctrl+M       normalize            Ctrl+G  gain
-I / O        fade in / out        Ctrl+R  render in place
-M            add marker           , / .   prev / next marker
-+ / -        zoom                 Z       zoom to selection
-L            loop                 N       snap on/off
-Ctrl+E       export mix           Ctrl+⇧E split at markers
+Space        play / stop          Shift+Space  stop at playhead (or the reverse)
+P            preview around cursor            L     loop
+← / →        nudge cursor (skip 5 s while playing)
+Shift+← / →  extend selection     Ctrl+← / →   previous / next edit point
+↑ / ↓        previous / next track (Shift adds to the selection)
+Home / End   start / end (Shift extends)      [ / ]  selection start / end
+PgUp / PgDn  scroll a screen      + / - / Z    zoom in / out / to selection
+S            split                Del / ⌫      delete (close gap)
+Ctrl+X/C/V   cut / copy / paste   Ctrl+L       silence (keep gap)
+Ctrl+Z       undo                 Ctrl+⇧Z      redo
+Ctrl+M       normalize            Ctrl+G       gain
+I / O        fade in / out        Ctrl+R       render in place
+M            add marker           , / .        previous / next marker
+Ctrl+⇧M      markers panel        Ctrl+,       preferences
+Ctrl+E       export mix           Ctrl+⇧E      export split at markers
 
 Mouse: drag in a track to select · drag a clip's title bar to move it ·
-drag clip edges to trim · drag the squares at
-a clip's top corners to set fades (overlaps crossfade automatically) · Ctrl+wheel zoom · Shift+wheel scroll ·
-click track headers to select tracks (Ctrl/Shift to add).";
+drag clip edges to trim · drag the squares at a clip's top corners for fades ·
+Ctrl+wheel zoom · Shift+wheel scroll · Alt disables snapping.";
