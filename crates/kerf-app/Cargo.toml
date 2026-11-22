@@ -1,0 +1,18 @@
+[package]
+name = "kerf"
+description = "Kerf - a fast, precise, cross-platform audio editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "kerf"
+path = "src/main.rs"
+
+[dependencies]
+kerf-core = { path = "../kerf-core" }
+eframe = "0.37"
+cpal = "0.18"
+rfd = "0.18"
+rtrb = "0.4"
