@@ -38,6 +38,10 @@ pub struct View {
     pub lane_width: f32,
     /// Height of the track area in points, measured each frame.
     pub lane_height: f32,
+    /// Vertical (amplitude) zoom factor for waveforms.
+    pub vzoom: f32,
+    /// Draw waveforms on a dB scale (quiet detail made visible).
+    pub db_scale: bool,
 }
 
 impl Default for View {
@@ -51,6 +55,8 @@ impl Default for View {
             snap: true,
             lane_width: 1000.0,
             lane_height: 400.0,
+            vzoom: 1.0,
+            db_scale: false,
         }
     }
 }
@@ -186,6 +192,13 @@ pub enum Action {
     ExtendToEnd,
     ToggleMarkersPanel,
     Preferences,
+    ZeroCrossings,
+    ToggleZeroCrossingSnap,
+    SelectSong,
+    VZoomIn,
+    VZoomOut,
+    VZoomReset,
+    ToggleDbScale,
     GoStart,
     GoEnd,
     ZoomIn,
@@ -227,6 +240,8 @@ pub struct KerfApp {
     screenshot: Option<ScreenshotHook>,
     pub prefs: crate::prefs::Prefs,
     recovery: Option<crate::recovery::Recovery>,
+    /// Text of the time field being typed into.
+    time_edit: Option<(egui::Id, String)>,
 }
 
 impl KerfApp {
@@ -285,6 +300,7 @@ impl KerfApp {
             }),
             prefs: crate::prefs::Prefs::load(),
             recovery: None,
+            time_edit: None,
         };
         app.player
             .configure(app.prefs.output_device.clone(), app.prefs.buffer_frames);
@@ -491,12 +507,16 @@ impl KerfApp {
             Split => {
                 let tracks = self.target_tracks();
                 let points: Vec<Frame> = match self.sel.range.filter(|(a, b)| b > a) {
+                    // (selection edges are already on zero crossings when snapping is on)
                     Some((a, b)) => vec![a, b],
-                    None => vec![if self.player.is_playing() {
-                        self.player.position()
-                    } else {
-                        self.cursor
-                    }],
+                    None => {
+                        let at = if self.player.is_playing() {
+                            self.player.position()
+                        } else {
+                            self.cursor
+                        };
+                        vec![self.zero_snap(at)]
+                    }
                 };
                 self.edit("Split", |p| {
                     points
@@ -736,6 +756,36 @@ impl KerfApp {
                 self.prefs.show_markers_panel = !self.prefs.show_markers_panel;
                 let _ = self.prefs.save();
             }
+            ZeroCrossings => {
+                let tracks = self.target_tracks();
+                let max = self.project().sample_rate as Frame / 50; // 20 ms
+                let z = |app: &Self, f| {
+                    kerf_core::render::nearest_zero_crossing(app.project(), &tracks, f, max)
+                };
+                match self.sel.range {
+                    Some((a, b)) => {
+                        let (za, zb) = (z(self, a), z(self, b));
+                        self.sel.range = (zb > za).then_some((za, zb));
+                        self.cursor = if self.cursor == a { za } else { zb };
+                    }
+                    None => self.cursor = z(self, self.cursor),
+                }
+            }
+            ToggleZeroCrossingSnap => {
+                self.prefs.snap_zero_crossings = !self.prefs.snap_zero_crossings;
+                let _ = self.prefs.save();
+                let state = if self.prefs.snap_zero_crossings {
+                    "on"
+                } else {
+                    "off"
+                };
+                self.info(format!("Snap to zero crossings {state}"));
+            }
+            SelectSong => self.select_between_markers(self.cursor),
+            VZoomIn => self.view.vzoom = (self.view.vzoom * 2.0).min(256.0),
+            VZoomOut => self.view.vzoom = (self.view.vzoom / 2.0).max(1.0),
+            VZoomReset => self.view.vzoom = 1.0,
+            ToggleDbScale => self.view.db_scale = !self.view.db_scale,
             Preferences => {
                 self.dialog = Some(Dialog::Preferences(Box::new(PrefsDraft {
                     prefs: self.prefs.clone(),
@@ -816,6 +866,45 @@ impl KerfApp {
         self.play_revision = self.doc.revision();
         if let Err(e) = self.player.play(snapshot, start, end, loop_start) {
             self.error(format!("Playback failed: {e}"));
+        }
+    }
+
+    /// `f` moved to the nearest zero crossing when that snapping is on.
+    pub fn zero_snap(&self, f: Frame) -> Frame {
+        if !self.prefs.snap_zero_crossings {
+            return f;
+        }
+        let max = self.project().sample_rate as Frame / 50; // 20 ms
+        kerf_core::render::nearest_zero_crossing(self.project(), &self.target_tracks(), f, max)
+    }
+
+    /// After a selection gesture: put its edges on zero crossings if enabled.
+    pub fn finish_selection(&mut self) {
+        if let (true, Some((a, b))) = (self.prefs.snap_zero_crossings, self.sel.range) {
+            let (za, zb) = (self.zero_snap(a), self.zero_snap(b));
+            self.cursor = if self.cursor == a { za } else { zb };
+            self.sel.range = (zb > za).then_some((za, zb));
+        }
+    }
+
+    /// Select from the marker at or before `at` to the next marker (a song).
+    pub fn select_between_markers(&mut self, at: Frame) {
+        let p = self.project();
+        let start = p
+            .markers
+            .iter()
+            .rev()
+            .find(|m| m.position <= at)
+            .map_or(0, |m| m.position);
+        let end = p
+            .markers
+            .iter()
+            .find(|m| m.position > at)
+            .map_or(p.length(), |m| m.position);
+        if end > start {
+            self.sel.tracks.clear();
+            self.sel.range = Some((start, end));
+            self.cursor = start;
         }
     }
 
@@ -1240,6 +1329,8 @@ impl KerfApp {
             (cmd, Key::ArrowLeft, Action::PrevEditPoint),
             (cmd, Key::ArrowRight, Action::NextEditPoint),
             (cmd, Key::Comma, Action::Preferences),
+            (cmd, Key::ArrowUp, Action::VZoomIn),
+            (cmd, Key::ArrowDown, Action::VZoomOut),
             (cmd_shift, Key::Z, Action::Redo),
             (cmd_shift, Key::S, Action::SaveAs),
             (cmd_shift, Key::E, Action::Export(ExportKind::Markers)),
@@ -1270,6 +1361,7 @@ impl KerfApp {
             (shift, Key::Home, Action::ExtendToStart),
             (shift, Key::End, Action::ExtendToEnd),
             (shift, Key::Space, Action::StopAtPlayhead),
+            (shift, Key::Z, Action::ZeroCrossings),
             (Modifiers::NONE, Key::Space, Action::PlayStop),
             (Modifiers::NONE, Key::ArrowLeft, Action::CursorLeft),
             (Modifiers::NONE, Key::ArrowRight, Action::CursorRight),
@@ -1280,6 +1372,7 @@ impl KerfApp {
             (Modifiers::NONE, Key::OpenBracket, Action::GoSelectionStart),
             (Modifiers::NONE, Key::CloseBracket, Action::GoSelectionEnd),
             (Modifiers::NONE, Key::P, Action::PreviewCursor),
+            (Modifiers::NONE, Key::D, Action::ToggleDbScale),
             (Modifiers::NONE, Key::S, Action::Split),
             (Modifiers::NONE, Key::M, Action::AddMarker),
             (Modifiers::NONE, Key::L, Action::ToggleLoop),
@@ -1436,6 +1529,21 @@ impl KerfApp {
                 item(ui, "Select All", "Ctrl+A", Action::SelectAll, &mut act);
                 item(ui, "Select None", "Esc", Action::SelectNone, &mut act);
                 ui.separator();
+                item(
+                    ui,
+                    "Move Selection to Zero Crossings",
+                    "Shift+Z",
+                    Action::ZeroCrossings,
+                    &mut act,
+                );
+                let mut zc = self.prefs.snap_zero_crossings;
+                if ui
+                    .checkbox(&mut zc, "Snap Edits to Zero Crossings")
+                    .changed()
+                {
+                    act = Some(Action::ToggleZeroCrossingSnap);
+                }
+                ui.separator();
                 item(ui, "Preferences…", "Ctrl+,", Action::Preferences, &mut act);
             });
             ui.menu_button("Process", |ui| {
@@ -1566,6 +1674,13 @@ impl KerfApp {
                     Action::SnapMarkersToSectors,
                     &mut act,
                 );
+                item(
+                    ui,
+                    "Select Song at Cursor",
+                    "double-click",
+                    Action::SelectSong,
+                    &mut act,
+                );
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Double-click a marker to rename,\nright-click to delete.")
@@ -1583,6 +1698,31 @@ impl KerfApp {
                     Action::ZoomSelection,
                     &mut act,
                 );
+                ui.separator();
+                item(
+                    ui,
+                    "Zoom In Vertically",
+                    "Ctrl+↑",
+                    Action::VZoomIn,
+                    &mut act,
+                );
+                item(
+                    ui,
+                    "Zoom Out Vertically",
+                    "Ctrl+↓",
+                    Action::VZoomOut,
+                    &mut act,
+                );
+                item(ui, "Reset Vertical Zoom", "", Action::VZoomReset, &mut act);
+                ui.checkbox(&mut self.view.db_scale, "Waveform in dB (D)");
+                ui.menu_button("Time Format", |ui| {
+                    for f in kerf_core::util::TimeFormat::ALL {
+                        if ui.radio(self.prefs.time_format == f, f.label()).clicked() {
+                            self.prefs.time_format = f;
+                            let _ = self.prefs.save();
+                        }
+                    }
+                });
                 ui.separator();
                 ui.checkbox(&mut self.view.snap, "Snap to edges & markers");
                 ui.checkbox(&mut self.view.follow, "Follow playhead");
@@ -1638,24 +1778,80 @@ impl KerfApp {
             } else {
                 self.cursor
             };
-            ui.label(
-                egui::RichText::new(format_time(pos, sr))
-                    .monospace()
-                    .size(20.0),
+            let mut format_changed = false;
+            let r = time_field(
+                ui,
+                "pos",
+                Some(pos),
+                150.0,
+                20.0,
+                &mut self.time_edit,
+                sr,
+                &mut self.prefs.time_format,
             );
-            ui.separator();
-            if let Some((a, b)) = self.sel.range {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Sel {} – {}  ({})",
-                        format_time(a, sr),
-                        format_time(b, sr),
-                        format_time(b - a, sr)
-                    ))
-                    .monospace(),
-                );
-                ui.separator();
+            format_changed |= r.1;
+            if let Some(f) = r.0 {
+                self.sel.range = None;
+                self.seek(f);
+                self.ensure_visible(f);
             }
+            ui.separator();
+            let range = self.sel.range;
+            let small = 104.0;
+            ui.label(egui::RichText::new("Start").weak());
+            let r = time_field(
+                ui,
+                "sel-start",
+                range.map(|r| r.0),
+                small,
+                13.0,
+                &mut self.time_edit,
+                sr,
+                &mut self.prefs.time_format,
+            );
+            format_changed |= r.1;
+            if let Some(f) = r.0 {
+                let end = range.map_or(self.cursor, |r| r.1);
+                self.sel.range = (end > f).then_some((f, end));
+                self.cursor = f;
+            }
+            ui.label(egui::RichText::new("End").weak());
+            let r = time_field(
+                ui,
+                "sel-end",
+                range.map(|r| r.1),
+                small,
+                13.0,
+                &mut self.time_edit,
+                sr,
+                &mut self.prefs.time_format,
+            );
+            format_changed |= r.1;
+            if let Some(f) = r.0 {
+                let start = range.map_or(self.cursor, |r| r.0);
+                self.sel.range = (f > start).then_some((start, f));
+                self.cursor = f;
+            }
+            ui.label(egui::RichText::new("Length").weak());
+            let r = time_field(
+                ui,
+                "sel-len",
+                range.map(|r| r.1 - r.0),
+                small,
+                13.0,
+                &mut self.time_edit,
+                sr,
+                &mut self.prefs.time_format,
+            );
+            format_changed |= r.1;
+            if let Some(len) = r.0 {
+                let start = range.map_or(self.cursor, |r| r.0);
+                self.sel.range = (len > 0).then_some((start, start + len));
+            }
+            if format_changed {
+                let _ = self.prefs.save();
+            }
+            ui.separator();
             ui.toggle_value(&mut self.view.snap, "🧲 Snap")
                 .on_hover_text("Snap to clip edges, markers and cursor");
             if ui.button("🔍+").on_hover_text("Zoom in (+)").clicked() {
@@ -2308,6 +2504,31 @@ impl KerfApp {
                 Ok("detect") => Some(Action::DetectSongs),
                 Ok("split") => Some(Action::Export(ExportKind::Markers)),
                 Ok("prefs") => Some(Action::Preferences),
+                Ok("precision") => {
+                    self.prefs.time_format = kerf_core::util::TimeFormat::CdFrames;
+                    self.view.vzoom = 4.0;
+                    // A song selected (as double-clicking between markers does).
+                    let p = self.doc.project();
+                    let at = 48_000 * 6;
+                    let a = p
+                        .markers
+                        .iter()
+                        .rev()
+                        .find(|m| m.position <= at)
+                        .map_or(0, |m| m.position);
+                    let b = p
+                        .markers
+                        .iter()
+                        .find(|m| m.position > at)
+                        .map_or(p.length(), |m| m.position);
+                    self.sel.range = Some((a, b));
+                    self.cursor = a;
+                    None
+                }
+                Ok("db") => {
+                    self.view.db_scale = true;
+                    None
+                }
                 Ok("recover") => {
                     if let Some(Dialog::Recover(orphans)) = &mut self.dialog {
                         let o = orphans.remove(0);
@@ -2512,6 +2733,70 @@ fn export_settings_ui(
         ui.separator();
         cd_safe_ui(ui, p, c, out_rate);
     }
+}
+
+/// An editable time display. Shows `value` (or "–") formatted; click to type,
+/// Enter applies, Escape or clicking away cancels. Returns the typed time
+/// when committed, and whether the time format was changed (right-click menu).
+#[allow(clippy::too_many_arguments)]
+fn time_field(
+    ui: &mut egui::Ui,
+    name: &str,
+    value: Option<Frame>,
+    width: f32,
+    size: f32,
+    editing: &mut Option<(egui::Id, String)>,
+    sample_rate: u32,
+    format: &mut kerf_core::util::TimeFormat,
+) -> (Option<Frame>, bool) {
+    let fmt = *format;
+    let id = egui::Id::unique(("time-field", name));
+    let shown = value
+        .map(|v| kerf_core::util::format_time_as(v, sample_rate, fmt))
+        .unwrap_or_default();
+    let is_editing = editing.as_ref().is_some_and(|(i, _)| *i == id);
+    let mut text = if is_editing {
+        editing.as_ref().unwrap().1.clone()
+    } else {
+        shown.clone()
+    };
+    let r = ui
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .id(id)
+                .font(egui::FontId::monospace(size))
+                .desired_width(width)
+                .hint_text("–"),
+        )
+        .on_hover_text(
+            "Click to type a time (Enter applies). Right-click to change the time format.",
+        );
+    if r.gained_focus() && !is_editing {
+        *editing = Some((id, shown));
+    } else if r.changed() {
+        *editing = Some((id, text.clone()));
+    }
+    let mut out = None;
+    if r.lost_focus() {
+        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            out = kerf_core::util::parse_time(&text, sample_rate, fmt);
+        }
+        if editing.as_ref().is_some_and(|(i, _)| *i == id) {
+            *editing = None;
+        }
+    }
+    let mut changed = false;
+    r.context_menu(|ui| {
+        ui.label(egui::RichText::new("Time format").strong());
+        for f in kerf_core::util::TimeFormat::ALL {
+            if ui.radio(fmt == f, f.label()).clicked() {
+                *format = f;
+                changed = true;
+                ui.close();
+            }
+        }
+    });
+    (out, changed)
 }
 
 /// The Preferences form.
@@ -2754,8 +3039,12 @@ Ctrl+M       normalize            Ctrl+G       gain
 I / O        fade in / out        Ctrl+R       render in place
 M            add marker           , / .        previous / next marker
 Ctrl+⇧M      markers panel        Ctrl+,       preferences
+Ctrl+↑ / ↓   vertical zoom        D            waveform in dB
+Shift+Z      selection to zero crossings
 Ctrl+E       export mix           Ctrl+⇧E      export split at markers
 
 Mouse: drag in a track to select · drag a clip's title bar to move it ·
 drag clip edges to trim · drag the squares at a clip's top corners for fades ·
+drag selection edges to adjust · double-click between markers to select a song ·
+click the time fields to type a time (right-click for the format) · Alt+wheel vertical zoom ·
 Ctrl+wheel zoom · Shift+wheel scroll · Alt disables snapping.";

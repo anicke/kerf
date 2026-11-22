@@ -7,7 +7,7 @@ use eframe::egui::{
 };
 use kerf_core::edit;
 use kerf_core::project::{Clip, ClipId, FadeShape, MarkerId, Project};
-use kerf_core::util::{db_to_gain, format_time, gain_to_db};
+use kerf_core::util::{db_to_gain, format_time, format_time_as, gain_to_db, TimeFormat};
 use kerf_core::{Frame, Samples, TrackId};
 
 use crate::app::{Action, Dialog, KerfApp};
@@ -72,6 +72,10 @@ pub enum Drag {
         id: MarkerId,
         pos: Frame,
     },
+    /// Dragging one edge of the time selection; `anchor` is the other edge.
+    SelectionEdge {
+        anchor: Frame,
+    },
     Scrollbar {
         grab: f32,
     },
@@ -105,9 +109,27 @@ struct Geo {
     scroll: f64,
     vscroll: f32,
     th: f32,
+    /// Amplitude zoom and dB scale for waveforms.
+    vzoom: f32,
+    db: bool,
 }
 
 impl Geo {
+    /// Display position (-1..1) for a sample value, with vertical zoom and
+    /// optional dB scale (60 dB range).
+    fn amp(&self, v: f32) -> f32 {
+        let v = v * self.vzoom;
+        if self.db {
+            let a = v.abs();
+            if a <= 1e-6 {
+                return 0.0;
+            }
+            (1.0 + 20.0 * a.log10() / 60.0).clamp(0.0, 1.0).copysign(v)
+        } else {
+            v.clamp(-1.0, 1.0)
+        }
+    }
+
     fn x(&self, frame: f64) -> f32 {
         self.lanes.left() + ((frame - self.scroll) / self.spp) as f32
     }
@@ -260,6 +282,9 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
         if zoom != 1.0 {
             app.view
                 .zoom(1.0 / zoom as f64, (h.x - lanes.left()).max(0.0));
+        } else if mods.alt && scroll_delta.y != 0.0 {
+            let factor = if scroll_delta.y > 0.0 { 1.25 } else { 0.8 };
+            app.view.vzoom = (app.view.vzoom * factor).clamp(1.0, 256.0);
         } else {
             app.view.scroll = (app.view.scroll - scroll_delta.x as f64 * app.view.spp).max(0.0);
             app.view.vscroll -= scroll_delta.y;
@@ -292,6 +317,8 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
         scroll: app.view.scroll,
         vscroll: app.view.vscroll,
         th: app.view.track_height,
+        vzoom: app.view.vzoom,
+        db: app.view.db_scale,
     };
 
     // Interaction regions (headers are handled per track below).
@@ -323,13 +350,21 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
     // Cursor feedback when hovering clips.
     if app.drag.is_none() {
         if let Some(h) = hover.filter(|h| geo.lanes.contains(*h)) {
-            match hit_clip(&base, &geo, h).map(|x| x.2) {
-                Some(Zone::LeftEdge | Zone::RightEdge) => {
-                    ctx.set_cursor_icon(CursorIcon::ResizeHorizontal)
+            let zone = hit_clip(&base, &geo, h).map(|x| x.2);
+            let handle = matches!(zone, Some(Zone::FadeIn | Zone::FadeOut));
+            if !handle && selection_edge_at(app, &base, &geo, h).is_some() {
+                ctx.set_cursor_icon(CursorIcon::ResizeColumn);
+            } else {
+                match zone {
+                    Some(Zone::LeftEdge | Zone::RightEdge) => {
+                        ctx.set_cursor_icon(CursorIcon::ResizeHorizontal)
+                    }
+                    Some(Zone::Header) => ctx.set_cursor_icon(CursorIcon::Grab),
+                    Some(Zone::FadeIn | Zone::FadeOut) => {
+                        ctx.set_cursor_icon(CursorIcon::ResizeColumn)
+                    }
+                    _ => {}
                 }
-                Some(Zone::Header) => ctx.set_cursor_icon(CursorIcon::Grab),
-                Some(Zone::FadeIn | Zone::FadeOut) => ctx.set_cursor_icon(CursorIcon::ResizeColumn),
-                _ => {}
             }
         }
     } else if matches!(app.drag, Some(Drag::MoveClip { .. })) {
@@ -470,7 +505,16 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
     painter.text(
         corner.left_center() + vec2(8.0, 0.0),
         Align2::LEFT_CENTER,
-        "Tracks",
+        {
+            let mut label = "Tracks".to_string();
+            if app.view.vzoom > 1.0 {
+                label.push_str(&format!("  ·  ×{:.1}", app.view.vzoom));
+            }
+            if app.view.db_scale {
+                label.push_str("  ·  dB");
+            }
+            label
+        },
         FontId::proportional(13.0),
         visuals.weak_text_color(),
     );
@@ -491,7 +535,17 @@ fn lane_interaction(
     if resp.drag_started() {
         if let Some(o) = press_origin {
             let f = geo.frame(o.x);
-            app.drag = Some(match hit_clip(p, geo, o) {
+            let hit = hit_clip(p, geo, o);
+            let on_handle = matches!(hit, Some((_, _, Zone::FadeIn | Zone::FadeOut)));
+            let edge = if on_handle {
+                None
+            } else {
+                selection_edge_at(app, p, geo, o)
+            };
+            app.drag = Some(match hit {
+                _ if edge.is_some() => Drag::SelectionEdge {
+                    anchor: edge.unwrap(),
+                },
                 Some((ti, id, Zone::Header)) => {
                     let c = p.clip(id).unwrap();
                     app.sel.clip = Some(id);
@@ -585,6 +639,13 @@ fn lane_interaction(
                         pos,
                     }
                 }
+                Drag::SelectionEdge { anchor } => {
+                    let f = snap(app, p, geo, f, None, mods.alt);
+                    let (a, b) = (anchor.min(f), anchor.max(f));
+                    app.sel.range = (b > a).then_some((a, b));
+                    app.cursor = f;
+                    Drag::SelectionEdge { anchor }
+                }
                 Drag::TrimStart { clip, .. } => Drag::TrimStart {
                     clip,
                     pos: snap(app, p, geo, f, Some(clip), mods.alt),
@@ -637,7 +698,8 @@ fn lane_interaction(
             Some(Drag::FadeOut { clip, len, shape }) => {
                 app.edit("Fade out", |p| edit::set_clip_fade_out(p, clip, len, shape));
             }
-            other => app.drag = other.filter(|d| !matches!(d, Drag::Select { .. })),
+            Some(Drag::Select { .. } | Drag::SelectionEdge { .. }) => app.finish_selection(),
+            other => app.drag = other,
         }
     }
 
@@ -678,6 +740,8 @@ fn lane_interaction(
             app.sel.tracks = vec![p.tracks[ti].id];
             app.sel.clip = Some(id);
             app.cursor = c.position;
+        } else if let Some(pos) = pointer {
+            app.select_between_markers(geo.frame(pos.x));
         }
     }
 
@@ -770,6 +834,23 @@ fn lane_interaction(
     }
 }
 
+/// If `pos` is on an edge of the time selection (on a selected track),
+/// the *other* edge, which stays put while this one is dragged.
+fn selection_edge_at(app: &KerfApp, p: &Project, geo: &Geo, pos: Pos2) -> Option<Frame> {
+    let (a, b) = app.sel.range?;
+    let ti = geo.track_at(pos.y, p.tracks.len())?;
+    if !app.target_tracks().contains(&p.tracks[ti].id) {
+        return None;
+    }
+    if (pos.x - geo.x(a as f64)).abs() <= EDGE_PX {
+        Some(b)
+    } else if (pos.x - geo.x(b as f64)).abs() <= EDGE_PX {
+        Some(a)
+    } else {
+        None
+    }
+}
+
 fn toggle(v: &mut Vec<TrackId>, id: TrackId) {
     if let Some(i) = v.iter().position(|x| *x == id) {
         v.remove(i);
@@ -829,7 +910,8 @@ fn ruler_interaction(
             Some(Drag::Marker { id, pos }) => {
                 app.edit("Move marker", |p| edit::move_marker(p, id, pos));
             }
-            Some(Drag::RulerSelect { .. }) | None => {}
+            Some(Drag::RulerSelect { .. }) => app.finish_selection(),
+            None => {}
             other => app.drag = other,
         }
     }
@@ -849,6 +931,9 @@ fn ruler_interaction(
                 .map(|m| m.name.clone())
                 .unwrap_or_default();
             app.dialog = Some(Dialog::RenameMarker(id, name));
+        } else if let Some(pos) = pointer {
+            // Between markers: select that song.
+            app.select_between_markers(geo.frame(pos.x));
         }
     }
     let menu_id = Id::unique("ruler-marker-menu");
@@ -983,11 +1068,18 @@ fn draw_ruler(
             Stroke::new(1.0, Color32::from_gray(110)),
         );
         if major {
-            let label = format_time((t * sr).round() as Frame, p.sample_rate);
-            let label = if step >= 1.0 {
-                label.trim_end_matches(".000").to_string()
-            } else {
-                label
+            let frame = (t * sr).round() as Frame;
+            let label = match app.prefs.time_format {
+                TimeFormat::MinSec => {
+                    let l = format_time(frame, p.sample_rate);
+                    if step >= 1.0 {
+                        l.trim_end_matches(".000").to_string()
+                    } else {
+                        l
+                    }
+                }
+                TimeFormat::Seconds if step >= 1.0 => format!("{}", frame / p.sample_rate as Frame),
+                fmt => format_time_as(frame, p.sample_rate, fmt),
             };
             rp.text(
                 pos2(x + 3.0, r.top() + 2.0),
@@ -1115,8 +1207,8 @@ fn draw_clip(painter: &egui::Painter, p: &Project, c: &Clip, row: Rect, geo: &Ge
                     let (lo, hi) = (lo * g, hi * g);
                     let mid = wave.top() + ch_h * (ch as f32 + 0.5);
                     let half = ch_h * 0.5 - 1.0;
-                    let y_hi = mid - hi.clamp(-1.0, 1.0) * half;
-                    let y_lo = (mid - lo.clamp(-1.0, 1.0) * half).max(y_hi + 1.0);
+                    let y_hi = mid - geo.amp(hi) * half;
+                    let y_lo = (mid - geo.amp(lo) * half).max(y_hi + 1.0);
                     let col = if hi > 1.0 || lo < -1.0 {
                         CLIPPED
                     } else {
@@ -1143,7 +1235,7 @@ fn draw_clip(painter: &egui::Painter, p: &Project, c: &Clip, row: Rect, geo: &Ge
                 .map(|f| {
                     let si = (f - c.position + c.source_start) as usize;
                     let v = data[si] * c.gain_at_source(si as i64);
-                    pos2(geo.x(f as f64), mid - v.clamp(-1.0, 1.0) * half)
+                    pos2(geo.x(f as f64), mid - geo.amp(v) * half)
                 })
                 .collect();
             if geo.spp < 0.2 {

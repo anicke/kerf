@@ -200,6 +200,48 @@ pub fn measure(project: &Project, start: Frame, end: Frame, opts: &RenderOptions
     meter
 }
 
+/// The zero crossing of the given tracks' mix (channels summed) nearest to
+/// `frame`, searching up to `max_distance` frames either way. Cutting or
+/// splitting there avoids clicks. Returns `frame` if there is none nearby.
+pub fn nearest_zero_crossing(
+    project: &Project,
+    tracks: &[TrackId],
+    frame: Frame,
+    max_distance: Frame,
+) -> Frame {
+    let start = frame.saturating_sub(max_distance);
+    let end = frame + max_distance + 1;
+    let buf = render(
+        project,
+        start,
+        end,
+        &RenderOptions::pre_fader(tracks.to_vec()),
+    );
+    let mono: Vec<f32> = (0..buf.frames())
+        .map(|i| (0..buf.num_channels()).map(|c| buf.channel(c)[i]).sum())
+        .collect();
+    let mut best: Option<(Frame, Frame)> = None; // (distance, position)
+    for i in 1..mono.len() {
+        let (a, b) = (mono[i - 1], mono[i]);
+        let crosses = (a <= 0.0 && b > 0.0) || (a >= 0.0 && b < 0.0) || b == 0.0;
+        if !crosses {
+            continue;
+        }
+        // Of the two samples around the crossing, the one nearer zero.
+        let pos = start
+            + if a.abs() < b.abs() {
+                i as Frame - 1
+            } else {
+                i as Frame
+            };
+        let d = pos.abs_diff(frame);
+        if best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, pos));
+        }
+    }
+    best.map_or(frame, |(_, p)| p)
+}
+
 /// Progress callback: receives 0..=1, returns `false` to cancel.
 pub type Progress<'a> = &'a mut dyn FnMut(f64) -> bool;
 
@@ -974,5 +1016,27 @@ mod tests {
             &mut |_| true,
         );
         assert!(matches!(r, Err(Error::InvalidRange)));
+    }
+
+    #[test]
+    fn zero_crossings() {
+        // 100 Hz sine at 48 kHz: zero crossings every 240 frames, starting at 0.
+        let mut p = Project::new(48_000, 1);
+        let sine: Vec<f32> = (0..48_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 100.0 * (i as f32 + 0.5) / 48_000.0).sin())
+            .collect();
+        let t = p.add_source_as_track("s", None, AudioBuffer::new(48_000, vec![sine]), 0);
+        for (from, want) in [(1000, 960), (1100, 1200), (1199, 1200), (5000, 5040)] {
+            let z = nearest_zero_crossing(&p, &[t], from, 480);
+            assert!(z.abs_diff(want) <= 1, "{from}: got {z}, want ~{want}");
+        }
+        // Nothing within reach: unchanged.
+        let dc = p.add_source_as_track(
+            "dc",
+            None,
+            AudioBuffer::new(48_000, vec![vec![0.5; 1000]]),
+            0,
+        );
+        assert_eq!(nearest_zero_crossing(&p, &[dc], 500, 100), 500);
     }
 }

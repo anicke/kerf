@@ -56,6 +56,11 @@ Focused purely on editing: no plugins or effects, just careful, non-destructive 
   a project maps the cache directly, with no decoding. Playback renders about 0.25 s ahead on its
   own thread, so disk reads never reach the real-time audio thread, and stop, seek and edits still
   take effect at once.
+- **Precision editing.** Type exact times in the toolbar's Position, Start, End and Length fields
+  (right-click for the time format: m:ss.mmm, seconds, samples or CD frames mm:ss:ff). Drag the
+  selection's edges to adjust it. Double-click between markers to select that song. Optionally snap
+  selection edges and splits to zero crossings to avoid clicks (Edit menu; Shift+Z moves the current
+  selection). Vertical zoom (Ctrl+↑/↓ or Alt+wheel) and a dB waveform scale (D) reveal quiet detail.
 - **Crash recovery.** Unsaved work is snapshotted every minute (configurable). If Kerf doesn't close
   normally, it offers to recover the work on the next start. Snapshots are tiny: audio is
   referenced, and rendered audio stays in the cache.
@@ -120,6 +125,8 @@ for trying song-start detection.
 | + / − / Z | Zoom in / out / to selection | Ctrl+F | Zoom to fit |
 | Ctrl+Shift+M | Markers panel | Ctrl+, | Preferences |
 | N | Toggle snap | Ctrl+E / Ctrl+Shift+E | Export mix / split at markers |
+| Ctrl+↑ / ↓ | Vertical zoom | D | Waveform in dB |
+| Shift+Z | Selection to zero crossings | Double-click | Select clip, or song between markers |
 
 Space and Shift+Space can be swapped in Preferences.
 

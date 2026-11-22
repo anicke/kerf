@@ -3,7 +3,7 @@
 
 use eframe::egui;
 use kerf_core::edit;
-use kerf_core::util::format_time;
+use kerf_core::util::format_time_as;
 
 use crate::app::{Action, KerfApp};
 
@@ -54,7 +54,12 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
                 });
                 row.show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let mut time = egui::RichText::new(format_time(m.position, sr)).monospace();
+                        let mut time = egui::RichText::new(format_time_as(
+                            m.position,
+                            sr,
+                            app.prefs.time_format,
+                        ))
+                        .monospace();
                         if Some(i) == current {
                             time = time.strong().color(ui.visuals().selection.stroke.color);
                         }
