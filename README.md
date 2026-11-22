@@ -3,6 +3,9 @@
 A fast, precise, cross-platform audio editor written in Rust (Windows, macOS, Linux).
 Focused purely on editing: no plugins or effects, just careful, non-destructive editing.
 
+See [ROADMAP.md](ROADMAP.md) for what's planned: finishing live albums end to end, a CLI, and an
+MCP server so AI assistants can edit alongside you.
+
 ## Highlights
 
 - **32-bit float end to end.** All audio is held as 32-bit float at the project rate. Nothing is

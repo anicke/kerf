@@ -1,0 +1,176 @@
+# Kerf Roadmap
+
+Kerf aims to be an open-source, cross-platform audio editor (with first-class Linux support) that
+is precise, non-destructive and quick to use, built for two things other editors leave on the table:
+**turning live recordings into finished albums**, and **being an editing partner an AI assistant
+can actually operate**.
+
+This plan collects the findings from comparing Kerf with established editors (WaveLab, Sound
+Forge, Audition, REAPER, Audacity) and from designing LLM integration. Sizes are rough estimates
+of focused work.
+
+## Where Kerf stands
+
+Shipped: 32-bit float non-destructive engine with unlimited undo; sample-exact split, cut, paste,
+trim, fades and crossfades; peak, RMS and BS.1770 loudness normalization; memory-mapped disk cache
+(flat RAM use); song-start detection for live recordings with setlist naming; CD-safe split and CUE
+export with an Audio CD preset; keyboard navigation, markers panel, crash recovery, preferences and
+device selection; typed times and formats, zero-crossing snap, vertical zoom and dB view.
+
+## Positioning: what makes Kerf stand out
+
+| Gap in established editors | Kerf's answer |
+|---|---|
+| No professional editor on Linux (WaveLab, Sound Forge, Audition are Windows/Mac) | Open source, cross-platform, Linux as a first-class target |
+| Finishing a live recording is a chain of manual chores | One workflow: detect, name, level, tag, export |
+| GUI-only; no batch use from outside the app | A CLI built on the same engine |
+| An AI assistant can't operate an audio editor | An MCP server, including one that edits the open project while you watch |
+| Comparing alternative edits means undo, listen, redo, remember | Instant A/B switching during playback, made cheap by Kerf's snapshots |
+| "Did this edit change anything else?" goes unanswered | A sample-exact null test that proves it |
+
+## Phase 1: Live recording to finished album
+
+The strongest differentiator, and Kerf's core use case. Builds directly on song detection and CD export.
+
+1. **Track metadata model.** Album fields (artist, album, year, genre, cover art) on the project,
+   and per-track fields (title, track number, optional ISRC) on markers. The setlist fills titles.
+2. **FLAC and MP3 export with tags.** WAV can't reliably carry titles, so today setlist names are
+   lost at export. FLAC (lossless, archival) first, then MP3. Tags, track numbers and cover art.
+   Must stay gapless (FLAC is naturally; MP3 needs encoder delay/padding info written).
+3. **Album-level loudness.** Measure the whole show and apply one gain to reach a target (e.g. -14
+   or -16 LUFS), so quiet songs stay quiet relative to loud ones. Optional true-peak ceiling.
+   Per-song normalization stays available but is not the default for albums.
+4. **Album view.** One screen listing tracks with title, start, length, loudness and peak, flags
+   for clipping or very short/long tracks, and a one-click export with the chosen preset.
+5. **Tests:** tag round-trip, gapless joins for FLAC/MP3, album gain preserves relative levels.
+
+Size: about 3–4 days.
+
+## Phase 2: Operations layer and CLI
+
+The foundation for both the CLI and MCP.
+
+1. **Operations layer in `kerf-core` (`ops`).** Every capability as a typed request and response
+   that converts to and from JSON: open/import/save, inspect, analyse range, detect songs, edit
+   operations, markers, export (with dry run), undo/redo. One implementation, used by the CLI, the
+   MCP server and eventually the GUI.
+2. **`kerf` CLI** (a separate binary in the workspace). Subcommands mapping onto operations, with
+   human-readable output by default and `--json` for scripts and agents. Example:
+   `kerf split show.wav --songs 14 --setlist list.txt --preset cd --cue --out album/`.
+   Batch over many files; non-zero exit codes on failure; never overwrites without `--force`.
+3. **Tests:** each operation through the JSON layer; CLI end-to-end on generated audio.
+
+Size: about 2–3 days.
+
+## Phase 3: MCP server (headless)
+
+Lets any MCP client (Claude Desktop, Claude Code, IDEs) drive Kerf with no shell access.
+
+The core insight: an LLM **cannot hear**, works **step by step**, and needs **typed, discoverable
+operations**. So the server must report audio richly, keep a live session, and describe its tools
+precisely.
+
+- **Transport:** stdio first (local, simplest), using the official Rust MCP SDK (`rmcp`). Verify
+  its current API and version before starting.
+- **Session:** one live project per server, with undo history and the shared disk cache.
+- **Tools** (all undoable, each returning a short summary of what changed):
+  - Session: open, new, import audio, save, undo, redo, history.
+  - Inspect: project summary (tracks, clips, markers, length, format); analyse a range (peak, RMS,
+    LUFS, clipping); detect song starts (with per-candidate confidence); find silences;
+    **render a waveform image of a range** (PNG returned as an image), which is the model's "eyes".
+  - Edit: split, delete/ripple delete, cut/paste, fades, gain, normalize, crossfade settings;
+    markers (add, move, rename, remove, apply detected).
+  - Album (after Phase 1): set metadata, album loudness, album summary.
+  - Export: every kind and preset, with a **dry run** reporting file names, timings and sector
+    boundary errors before writing.
+  - Compare: checkpoint and compare versions (loudness difference, null test).
+- **Resources:** project summary, marker list, edit history.
+- **Prompts:** guided workflows, starting with "prepare a live album" (detect, check, name, level,
+  tag, export).
+- **Safety:** everything non-destructive and undoable; exports never overwrite without an explicit
+  flag; dry runs encouraged by tool descriptions; file access limited to paths the user provides.
+- **Audio output to the model:** MCP can carry audio content, but whether a given model can listen
+  to it varies. Text analysis and waveform images are the dependable path; audio is optional.
+- **Tests:** tool schemas; scripted MCP sessions on generated audio, including undo and dry runs.
+
+Size: about 3 days, given Phase 2.
+
+## Phase 4: MCP inside the running app
+
+The standout version: the assistant edits the project you have open, and **you watch the changes
+happen on the timeline**, with every step in normal undo. You can stop it, adjust, or take over.
+
+- The app hosts the same MCP tools on a local socket. Requests are queued into the UI loop and
+  applied there, so the GUI and the assistant never edit concurrently.
+- Each AI edit is labelled in the undo history (e.g. "AI: split at 3:12").
+- A visible indicator while an assistant is connected, and a one-click disconnect.
+- Opt-in in Preferences; off by default.
+
+Size: about 2–3 days, given Phase 3.
+
+## Phase 5: A/B alternatives and null test
+
+- **A/B alternatives:** mark the current state as A, try a different crossfade, cut or level as B,
+  and flip between them **during playback** with one key, staying in sync. Built on project
+  snapshots (already cheap). Keep or discard either side.
+- **Null test / compare:** compare two files, renders or project versions sample by sample: where
+  they differ, by how much (peak and RMS of the difference), with optional automatic alignment.
+  Proves edits are lossless and catches accidental changes. Exposed in the app, CLI and MCP.
+
+Size: about 2–3 days.
+
+## Phase 6: Remaining everyday features
+
+From the comparison with established editors:
+
+- Scrubbing (drag the playhead to hear) and J/K/L shuttle.
+- Undo history panel (click to jump back several steps).
+- Statistics and loudness panel: selection peak, true peak, RMS, LUFS, plus a live loudness meter.
+- Recent files.
+- Customisable shortcuts.
+
+Size: about 3–4 days in total.
+
+## Phase 7: Platform, packaging and open-source readiness
+
+- **CI on Windows, macOS and Linux** (build, test, clippy). Only Linux is tested so far.
+- **Packages:** Linux (AppImage and/or Flatpak), macOS (signed .dmg), Windows (installer).
+- **Licence** (decision needed; `Cargo.toml` currently says "MIT OR Apache-2.0" as a placeholder)
+  and licence files.
+- **Dependency licence checks** with `cargo-deny` in CI. Symphonia is MPL-2.0 (compatible).
+- **AAC decoding as a build option,** since AAC may involve patent licensing in some countries
+  (MP3's patents have expired).
+- Contributor docs: architecture overview, CONTRIBUTING.md.
+
+## Later and ambitious
+
+- **Offline speech transcription** with a local model (nothing sent to the cloud): name songs from
+  the band's own introductions ("this one's called…"), and edit speech by editing its transcript
+  for podcasts and interviews. Large, but the most striking differentiator.
+- **Read uncompressed WAV directly** (no cache copy) when it already matches the project format:
+  halves disk use and makes import instant for large WAV collections.
+- **Regions** (start/end, not just point markers) for precise gaps between CD tracks.
+- **Recording**, if Kerf should ever capture audio rather than only edit it.
+- **Spectral view and spectral selection.**
+
+## Known limitations
+
+- Song detection is tuned on synthetic audio; defaults need real concert recordings to refine.
+  Songs that flow into each other (segues) need markers by hand.
+- Exports at sample rates that aren't a multiple of 75 Hz (e.g. 32 kHz) can't be made CD-safe.
+- Playback has only been verified by tests, not on a range of real audio devices.
+- Big-endian processors are not supported (no current desktop platform uses one).
+
+## Open decisions
+
+1. Licence choice before making the repository public.
+2. Album loudness default target (-14 LUFS streaming vs. -16 or lower for dynamic live music).
+3. Export formats beyond FLAC and MP3 (e.g. Opus, AAC, DDP for CD replication).
+4. Whether the in-app MCP server should also accept connections from other machines (default:
+   local only).
+5. Transcription model and its size/licence, if pursued.
+
+## Suggested order
+
+Phase 1 → Phase 2 → Phase 3 → Phase 4, with Phase 7's CI added early (it protects everything
+after it). Phases 5 and 6 can be interleaved as smaller tasks.
