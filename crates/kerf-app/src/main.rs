@@ -2,6 +2,7 @@
 
 mod app;
 mod audio;
+mod detect_ui;
 mod jobs;
 mod timeline;
 

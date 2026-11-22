@@ -19,6 +19,15 @@ Focused purely on editing: no plugins or effects, just careful, non-destructive 
 - **Rendering and track splits.** Export the mix or a selection; split an album recording into one
   file per region between markers; export each track as a stem; or render a track in place to
   consolidate edits. WAV output in 16/24/32-bit PCM (with TPDF dither) or 32-bit float.
+- **Song markers for live recordings.** *Markers → Detect Song Starts…* finds where each song
+  begins in a concert recording. Live recordings have no silence between songs (applause, crowd,
+  talking), so Kerf looks for where the *music* stops and starts, using loudness relative to the
+  show's own song level and how noise-like the sound is. A quiet passage inside a song is not
+  mistaken for a gap. If you know how many songs there were, say so and the strongest gaps win.
+  Paste a setlist to name the tracks, preview the markers live, then export with *Export Split at
+  Markers* or *Export Mix with CUE Sheet* (one gapless WAV plus a `.cue` file). Spoken
+  introductions stay with the song they introduce. Re-running replaces only automatic markers.
+  Songs that flow into each other without a gap need a marker by hand.
 - **Editing.** Cut/copy/paste (insert, overwrite, or mix), delete (close gap), silence (leave gap),
   trim to selection, insert silence, split, move and trim clips with snapping, clip gain,
   track gain/pan/mute/solo, and markers. Panning uses a constant-power law (−3 dB at centre) for
@@ -70,6 +79,8 @@ On Linux, building needs the ALSA development headers (`libasound2-dev` / `alsa-
 
 `cargo run -p kerf-core --example demo_project -- <dir>` generates a demo project that exercises
 most features.
+`cargo run --release -p kerf-core --example live_show -- show.wav` generates a synthetic concert
+for trying song-start detection.
 
 ## Keyboard
 

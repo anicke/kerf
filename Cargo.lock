@@ -1822,6 +1822,7 @@ dependencies = [
  "dirs",
  "hound",
  "memmap2",
+ "realfft",
  "rubato",
  "serde",
  "serde_json",

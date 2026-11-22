@@ -345,6 +345,10 @@ pub struct Marker {
     pub id: MarkerId,
     pub position: Frame,
     pub name: String,
+    /// Placed by automatic detection; re-running detection replaces these
+    /// but never touches markers you placed yourself.
+    #[serde(default)]
+    pub auto: bool,
 }
 
 /// The whole editable state. Cheap to clone (audio is shared via `Arc`).
@@ -517,11 +521,21 @@ impl Project {
     }
 
     pub fn add_marker(&mut self, position: Frame, name: impl Into<String>) -> MarkerId {
+        self.push_marker(position, name.into(), false)
+    }
+
+    /// Add a marker flagged as automatically placed (see [`Marker::auto`]).
+    pub fn add_auto_marker(&mut self, position: Frame, name: impl Into<String>) -> MarkerId {
+        self.push_marker(position, name.into(), true)
+    }
+
+    fn push_marker(&mut self, position: Frame, name: String, auto: bool) -> MarkerId {
         let id = MarkerId(self.ids.alloc());
         self.markers.push(Marker {
             id,
             position,
-            name: name.into(),
+            name,
+            auto,
         });
         self.sort_markers();
         id

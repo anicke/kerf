@@ -79,6 +79,7 @@ pub enum ExportKind {
     Selection,
     Markers,
     Stems,
+    CueSheet,
 }
 
 impl ExportKind {
@@ -88,6 +89,7 @@ impl ExportKind {
             Self::Selection => "Export Selection",
             Self::Markers => "Export Split at Markers",
             Self::Stems => "Export Tracks as Stems",
+            Self::CueSheet => "Export Mix with CUE Sheet",
         }
     }
 }
@@ -100,6 +102,7 @@ pub enum Dialog {
     RenameMarker(MarkerId, String),
     ConfirmDiscard(Pending),
     AudioCache(CacheView),
+    DetectSongs(Box<crate::detect_ui::DetectState>),
     About,
 }
 
@@ -159,6 +162,7 @@ pub enum Action {
     ToggleLoop,
     ToggleSnap,
     AudioCache,
+    DetectSongs,
     About,
 }
 
@@ -570,6 +574,7 @@ impl KerfApp {
             }
             ToggleLoop => self.loop_playback = !self.loop_playback,
             ToggleSnap => self.view.snap = !self.view.snap,
+            DetectSongs => self.detect_songs(ctx),
             AudioCache => {
                 self.dialog = Some(Dialog::AudioCache(CacheView {
                     stats: None,
@@ -813,7 +818,7 @@ impl KerfApp {
             dlg = dlg.set_directory(d);
         }
         let target = match kind {
-            ExportKind::Mix | ExportKind::Selection => dlg
+            ExportKind::Mix | ExportKind::Selection | ExportKind::CueSheet => dlg
                 .add_filter("WAV audio", &["wav"])
                 .set_file_name(format!("{base}.wav"))
                 .save_file()
@@ -856,6 +861,9 @@ impl KerfApp {
                 }
                 ExportKind::Stems => {
                     render::export_stems(&project, 0, len, &target, settings, &mut progress)
+                }
+                ExportKind::CueSheet => {
+                    render::export_with_cue(&project, &target, &base, settings, &mut progress)
                 }
             };
             JobDone::Exported(r.map_err(|e| e.to_string()))
@@ -925,6 +933,14 @@ impl KerfApp {
                     self.info(format!("Opened {}", path.display()));
                 }
                 Err(e) => self.error(format!("Could not open {}: {e}", path.display())),
+            },
+            JobDone::Analyzed(r, tracks, revision) => match r {
+                Ok(a) => {
+                    let state = crate::detect_ui::DetectState::new(a, tracks, revision);
+                    self.dialog = Some(Dialog::DetectSongs(Box::new(state)));
+                }
+                Err(e) if e == kerf_core::Error::Cancelled.to_string() => {}
+                Err(e) => self.error(format!("Analysis failed: {e}")),
             },
             JobDone::Exported(r) => match r {
                 Ok(paths) if paths.len() == 1 => {
@@ -1071,6 +1087,13 @@ impl KerfApp {
                 );
                 item(
                     ui,
+                    "Export Mix with CUE Sheet…",
+                    "",
+                    Action::Export(ExportKind::CueSheet),
+                    &mut act,
+                );
+                item(
+                    ui,
                     "Export Tracks as Stems…",
                     "",
                     Action::Export(ExportKind::Stems),
@@ -1180,6 +1203,8 @@ impl KerfApp {
                 item(ui, "Add Marker", "M", Action::AddMarker, &mut act);
                 item(ui, "Previous Marker", ",", Action::PrevMarker, &mut act);
                 item(ui, "Next Marker", ".", Action::NextMarker, &mut act);
+                ui.separator();
+                item(ui, "Detect Song Starts…", "", Action::DetectSongs, &mut act);
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Double-click a marker to rename,\nright-click to delete.")
@@ -1339,6 +1364,7 @@ impl KerfApp {
             Dialog::RenameMarker(..) => "Rename Marker",
             Dialog::ConfirmDiscard(_) => "Unsaved Changes",
             Dialog::AudioCache(_) => "Audio Cache",
+            Dialog::DetectSongs(_) => "Detect Song Starts",
             Dialog::About => "About Kerf",
         };
         let scope = match self.sel.range.filter(|(a, b)| b > a) {
@@ -1462,6 +1488,19 @@ impl KerfApp {
                         ExportKind::Stems => {
                             ui.label("Creates one file per unmuted track (with track gain and pan).");
                         }
+                        ExportKind::CueSheet => {
+                            let n = render::regions_from_markers(self.project(), self.project().length()).len();
+                            ui.label(format!(
+                                "Renders the whole mix as one WAV plus a CUE sheet with {n} track(s), one per marker. \
+                                 Ideal for live recordings: players and CD burners play it gaplessly."
+                            ));
+                            if self.project().markers.is_empty() {
+                                ui.colored_label(
+                                    ui.visuals().warn_fg_color,
+                                    "No markers yet — use Markers → Detect Song Starts… or press M.",
+                                );
+                            }
+                        }
                         _ => {
                             ui.label("Renders all audible tracks with gain, pan, mute and solo.");
                         }
@@ -1533,6 +1572,31 @@ impl KerfApp {
                             close = true;
                         }
                     });
+                }
+                Dialog::DetectSongs(state) => {
+                    use crate::detect_ui::Outcome;
+                    match state.ui(ui, self.project().sample_rate, self.doc.revision()) {
+                        Outcome::None => {}
+                        Outcome::Cancel => close = true,
+                        Outcome::Reanalyze => {
+                            run = Some(Box::new(|app, ctx| app.detect_songs(ctx)));
+                            close = true;
+                        }
+                        Outcome::Apply { start, end, positions, names } => {
+                            run = Some(Box::new(move |app, _| {
+                                let n = positions.len();
+                                if app
+                                    .edit("Detect song starts", |p| {
+                                        kerf_core::detect::apply_markers(p, start, end, &positions, &names)
+                                    })
+                                    .is_some()
+                                {
+                                    app.info(format!("Placed {n} song markers. Export with File → Export Split at Markers or CUE Sheet."));
+                                }
+                            }));
+                            close = true;
+                        }
+                    }
                 }
                 Dialog::AudioCache(view) => {
                     match &self.cache {
@@ -1617,6 +1681,29 @@ impl KerfApp {
         if let Some(f) = run {
             f(self, ctx);
         }
+    }
+
+    /// Analyse the selection (or everything) in the background, then open the
+    /// Detect Song Starts dialog.
+    fn detect_songs(&mut self, ctx: &egui::Context) {
+        if self.busy() {
+            return;
+        }
+        let len = self.project().length();
+        if len == 0 {
+            self.error("Nothing to analyse");
+            return;
+        }
+        let (start, end) = self.sel.range.filter(|(a, b)| b > a).unwrap_or((0, len));
+        let tracks = self.target_tracks();
+        let project = self.project().clone();
+        let revision = self.doc.revision();
+        self.job = Some(Job::spawn(ctx, "Analysing recording…", move |ctl| {
+            let r =
+                kerf_core::detect::analyze(&project, &tracks, start, end, &mut |p| ctl.progress(p))
+                    .map_err(|e| e.to_string());
+            JobDone::Analyzed(r, tracks, revision)
+        }));
     }
 
     /// Re-read cache statistics into the open Audio Cache dialog.
@@ -1780,9 +1867,17 @@ impl KerfApp {
         if self.job.is_none() {
             hook.frames += 1;
         }
-        if hook.frames == 10 && std::env::var("KERF_SCREENSHOT_DIALOG").as_deref() == Ok("cache") {
-            self.perform(ctx, Action::AudioCache);
-            return;
+        if hook.frames == 10 {
+            let action = match std::env::var("KERF_SCREENSHOT_DIALOG").as_deref() {
+                Ok("cache") => Some(Action::AudioCache),
+                Ok("detect") => Some(Action::DetectSongs),
+                _ => None,
+            };
+            if let Some(a) = action {
+                hook.frames += 1; // fire once, even though the action starts a job
+                self.perform(ctx, a);
+                return;
+            }
         }
         if hook.frames == 20 {
             let (path, done) = (hook.path.clone(), hook.done.clone());

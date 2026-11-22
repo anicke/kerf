@@ -20,6 +20,12 @@ pub enum JobDone {
     Imported(Vec<Result<Prepared, String>>),
     Loaded(PathBuf, Result<Project, String>),
     Exported(Result<Vec<PathBuf>, String>),
+    /// Song-start analysis, with the tracks and document revision it was made from.
+    Analyzed(
+        Result<kerf_core::detect::Analysis, String>,
+        Vec<kerf_core::TrackId>,
+        u64,
+    ),
 }
 
 #[derive(Clone)]

@@ -33,6 +33,7 @@ const CURSOR: Color32 = Color32::from_rgb(240, 240, 240);
 const PLAYHEAD: Color32 = Color32::from_rgb(80, 230, 120);
 const MARKER: Color32 = Color32::from_rgb(255, 160, 50);
 const FADE: Color32 = Color32::from_rgb(255, 220, 120);
+const PREVIEW: Color32 = Color32::from_rgb(90, 220, 255);
 
 #[derive(Clone, Debug)]
 pub enum Drag {
@@ -427,6 +428,23 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
             full_lanes_y,
             Stroke::new(1.0, MARKER.gamma_multiply(0.6)),
         );
+    }
+    // Proposed song markers while the Detect Song Starts dialog is open.
+    if let Some(crate::app::Dialog::DetectSongs(state)) = &app.dialog {
+        for (pos, name) in &state.preview {
+            let x = geo.x(*pos as f64);
+            lane_painter.vline(x, full_lanes_y, Stroke::new(2.0, PREVIEW));
+            // Label below the clip title bar, on a backing so it reads over waveforms.
+            let galley = painter.layout_no_wrap(name.clone(), FontId::proportional(12.0), PREVIEW);
+            let at = pos2(x + 4.0, geo.lanes.top() + CLIP_HEADER_H + 4.0);
+            let lanes_painter = painter.with_clip_rect(geo.lanes);
+            lanes_painter.rect_filled(
+                Rect::from_min_size(at - vec2(2.0, 1.0), galley.size() + vec2(4.0, 2.0)),
+                2.0,
+                Color32::from_black_alpha(190),
+            );
+            lanes_painter.galley(at, galley, PREVIEW);
+        }
     }
     let cx = geo.x(app.cursor as f64);
     lane_painter.vline(cx, full_lanes_y, Stroke::new(1.0, CURSOR));

@@ -296,6 +296,81 @@ pub fn export_regions(
     Ok(paths)
 }
 
+/// CUE sheet index time: `mm:ss:ff` with 75 frames per second (CD sectors).
+/// CUE resolution is 1/75 s, so positions are rounded down to a sector.
+fn cue_time(frames: Frame, sample_rate: u32) -> String {
+    let sectors = frames * 75 / sample_rate.max(1) as Frame;
+    format!(
+        "{:02}:{:02}:{:02}",
+        sectors / (75 * 60),
+        (sectors / 75) % 60,
+        sectors % 75
+    )
+}
+
+fn cue_quote(s: &str) -> String {
+    s.replace('"', "'")
+}
+
+/// Write a CUE sheet describing `regions` as the tracks of one audio file,
+/// e.g. a live concert exported as a single gapless WAV.
+pub fn write_cue(
+    path: &Path,
+    audio_file: &str,
+    title: &str,
+    regions: &[Region],
+    sample_rate: u32,
+) -> Result<()> {
+    let mut cue = String::new();
+    cue.push_str("REM COMMENT \"Kerf\"\n");
+    cue.push_str(&format!("TITLE \"{}\"\n", cue_quote(title)));
+    cue.push_str(&format!("FILE \"{}\" WAVE\n", cue_quote(audio_file)));
+    for (i, r) in regions.iter().enumerate() {
+        cue.push_str(&format!("  TRACK {:02} AUDIO\n", i + 1));
+        cue.push_str(&format!("    TITLE \"{}\"\n", cue_quote(&r.name)));
+        cue.push_str(&format!(
+            "    INDEX 01 {}\n",
+            cue_time(r.start, sample_rate)
+        ));
+    }
+    std::fs::write(path, cue)?;
+    Ok(())
+}
+
+/// Export the whole mix as one WAV plus a CUE sheet with a track at every
+/// marker. Returns both paths.
+pub fn export_with_cue(
+    project: &Project,
+    wav_path: &Path,
+    title: &str,
+    settings: ExportSettings,
+    progress: Progress,
+) -> Result<Vec<PathBuf>> {
+    let end = project.length();
+    export_range(
+        project,
+        0,
+        end,
+        &RenderOptions::default(),
+        wav_path,
+        settings,
+        progress,
+    )?;
+    let cue_path = wav_path.with_extension("cue");
+    let file_name = wav_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    write_cue(
+        &cue_path,
+        &file_name,
+        title,
+        &regions_from_markers(project, end),
+        project.sample_rate,
+    )?;
+    Ok(vec![wav_path.to_path_buf(), cue_path])
+}
+
 /// Export every audible track (post-fader, solo ignored) as its own file.
 pub fn export_stems(
     project: &Project,
@@ -466,5 +541,30 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn cue_sheet() {
+        assert_eq!(cue_time(0, 48_000), "00:00:00");
+        assert_eq!(cue_time(48_000 * 61 + 640, 48_000), "01:01:01"); // 640 samples = 1 sector at 48 kHz
+        assert_eq!(cue_time(44_100 * 3600, 44_100), "60:00:00");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("show.cue");
+        let regions = vec![
+            Region {
+                start: 0,
+                end: 48_000,
+                name: "Intro".into(),
+            },
+            Region {
+                start: 48_000 * 90,
+                end: 48_000 * 200,
+                name: "Say \"Hi\"".into(),
+            },
+        ];
+        write_cue(&path, "show.wav", "Live", &regions, 48_000).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("FILE \"show.wav\" WAVE"));
+        assert!(text.contains("  TRACK 02 AUDIO\n    TITLE \"Say 'Hi'\"\n    INDEX 01 01:30:00"));
     }
 }

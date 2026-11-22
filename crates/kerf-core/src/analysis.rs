@@ -6,7 +6,7 @@ use crate::util::gain_to_db;
 
 /// Biquad in transposed direct form II, f64 for accuracy at low frequencies.
 #[derive(Clone, Copy, Debug)]
-struct Biquad {
+pub(crate) struct Biquad {
     b: [f64; 3],
     a: [f64; 3],
     z1: f64,
@@ -24,7 +24,7 @@ impl Biquad {
     }
 
     #[inline]
-    fn process(&mut self, x: f64) -> f64 {
+    pub(crate) fn process(&mut self, x: f64) -> f64 {
         let y = self.b[0] * x + self.z1;
         self.z1 = self.b[1] * x - self.a[1] * y + self.z2;
         self.z2 = self.b[2] * x - self.a[2] * y;
@@ -35,7 +35,7 @@ impl Biquad {
 /// K-weighting filter pair (high shelf + RLB high-pass) for any sample rate.
 /// Coefficients follow the analytic derivation used by libebur128, which
 /// reproduces the BS.1770 reference coefficients exactly at 48 kHz.
-fn k_weighting(sample_rate: f64) -> [Biquad; 2] {
+pub(crate) fn k_weighting(sample_rate: f64) -> [Biquad; 2] {
     use std::f64::consts::PI;
     // Stage 1: high shelf.
     let f0 = 1681.974450955533;

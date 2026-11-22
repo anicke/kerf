@@ -20,6 +20,7 @@
 pub mod analysis;
 pub mod buffer;
 pub mod cache;
+pub mod detect;
 pub mod document;
 pub mod edit;
 pub mod error;
