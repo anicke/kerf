@@ -43,7 +43,7 @@ pub fn resample(buf: &AudioBuffer, target_rate: u32) -> Result<AudioBuffer> {
 }
 
 /// Exact output length for `frames` input frames.
-fn exact_len(frames: u64, from: u32, to: u32) -> u64 {
+pub(crate) fn exact_len(frames: u64, from: u32, to: u32) -> u64 {
     ((frames as u128 * to as u128 + from as u128 / 2) / from as u128) as u64
 }
 

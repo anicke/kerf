@@ -1527,29 +1527,13 @@ impl KerfApp {
                             ui.label("Renders all audible tracks with gain, pan, mute and solo.");
                         }
                     }
-                    if matches!(kind, ExportKind::Markers | ExportKind::CueSheet) {
-                        ui.separator();
-                        cd_safe_ui(ui, self.doc.project(), &mut self.cd_safe);
-                    }
                     ui.separator();
-                    egui::Grid::new("exp").num_columns(2).show(ui, |ui| {
-                        ui.label("Format");
-                        egui::ComboBox::from_id_salt("fmt").selected_text(self.export_settings.format.label()).show_ui(ui, |ui| {
-                            for f in SampleFormat::ALL {
-                                ui.selectable_value(&mut self.export_settings.format, f, f.label());
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Dither");
-                        ui.add_enabled(
-                            !self.export_settings.format.is_float(),
-                            egui::Checkbox::new(&mut self.export_settings.dither, "TPDF dither"),
-                        );
-                        ui.end_row();
-                    });
-                    if self.export_settings.format.is_float() {
-                        ui.label(egui::RichText::new("32-bit float preserves the full mix, including peaks above 0 dBFS.").weak().small());
-                    }
+                    export_settings_ui(
+                        ui,
+                        self.doc.project(),
+                        &mut self.export_settings,
+                        matches!(kind, ExportKind::Markers | ExportKind::CueSheet).then_some(&mut self.cd_safe),
+                    );
                     ui.horizontal(|ui| {
                         if ui.button("Export…").clicked() {
                             run = Some(Box::new(move |app, ctx| app.start_export(ctx, kind)));
@@ -1908,6 +1892,10 @@ impl KerfApp {
                 Ok("cache") => Some(Action::AudioCache),
                 Ok("detect") => Some(Action::DetectSongs),
                 Ok("split") => Some(Action::Export(ExportKind::Markers)),
+                Ok("split-cd") => {
+                    self.export_settings = ExportSettings::AUDIO_CD;
+                    Some(Action::Export(ExportKind::Markers))
+                }
                 Ok("split-raw") => {
                     self.cd_safe = false;
                     Some(Action::Export(ExportKind::Markers))
@@ -1939,8 +1927,169 @@ impl KerfApp {
     }
 }
 
+#[derive(PartialEq)]
+enum Preset {
+    AudioCd,
+    Archive,
+    Custom,
+}
+
+/// Export format controls with presets. `cd_safe` is shown for exports that
+/// have track boundaries (split, CUE).
+fn export_settings_ui(
+    ui: &mut egui::Ui,
+    p: &Project,
+    s: &mut ExportSettings,
+    cd_safe: Option<&mut bool>,
+) {
+    let (pr, pc) = (p.sample_rate, p.channels);
+    let preset = if s.is_audio_cd(pr, pc) {
+        Preset::AudioCd
+    } else if s.format.is_float() && s.rate_for(pr) == pr && s.channels_for(pc) == pc {
+        Preset::Archive
+    } else {
+        Preset::Custom
+    };
+    let mut chosen = None;
+    egui::Grid::new("exp")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            ui.label("Preset");
+            let label = match preset {
+                Preset::AudioCd => "Audio CD",
+                Preset::Archive => "Archive (32-bit float)",
+                Preset::Custom => "Custom",
+            };
+            egui::ComboBox::from_id_salt("preset")
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(preset == Preset::AudioCd, "Audio CD")
+                        .on_hover_text(
+                            "16-bit, 44.1 kHz stereo, dithered, CD-safe track boundaries",
+                        )
+                        .clicked()
+                    {
+                        chosen = Some(Preset::AudioCd);
+                    }
+                    if ui
+                        .selectable_label(preset == Preset::Archive, "Archive (32-bit float)")
+                        .on_hover_text(
+                            "Lossless 32-bit float at the project's own rate and channels",
+                        )
+                        .clicked()
+                    {
+                        chosen = Some(Preset::Archive);
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Format");
+            egui::ComboBox::from_id_salt("fmt")
+                .selected_text(s.format.label())
+                .show_ui(ui, |ui| {
+                    for f in SampleFormat::ALL {
+                        ui.selectable_value(&mut s.format, f, f.label());
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Sample rate");
+            let rate_label = |r: Option<u32>| match r {
+                None => format!("Project ({pr} Hz)"),
+                Some(r) => format!("{r} Hz"),
+            };
+            egui::ComboBox::from_id_salt("rate")
+                .selected_text(rate_label(s.sample_rate))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut s.sample_rate, None, rate_label(None));
+                    for r in [44_100, 48_000, 88_200, 96_000] {
+                        if r != pr {
+                            ui.selectable_value(&mut s.sample_rate, Some(r), rate_label(Some(r)));
+                        }
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Channels");
+            let ch_name = |n: u16| match n {
+                1 => "mono".to_string(),
+                2 => "stereo".to_string(),
+                n => format!("{n} channels"),
+            };
+            egui::ComboBox::from_id_salt("chans")
+                .selected_text(match s.channels {
+                    None => format!("Project ({})", ch_name(pc)),
+                    Some(n) => ch_name(n),
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut s.channels,
+                        None,
+                        format!("Project ({})", ch_name(pc)),
+                    );
+                    for n in [1u16, 2] {
+                        if n != pc {
+                            ui.selectable_value(&mut s.channels, Some(n), ch_name(n));
+                        }
+                    }
+                });
+            ui.end_row();
+
+            ui.label("Dither");
+            ui.add_enabled(
+                !s.format.is_float(),
+                egui::Checkbox::new(&mut s.dither, "TPDF dither"),
+            );
+            ui.end_row();
+        });
+    // Same-as-project choices are stored as "project" so presets stay recognisable.
+    if s.sample_rate == Some(pr) {
+        s.sample_rate = None;
+    }
+    if s.channels == Some(pc) {
+        s.channels = None;
+    }
+
+    let mut cd_safe = cd_safe;
+    match chosen {
+        Some(Preset::AudioCd) => {
+            *s = ExportSettings::AUDIO_CD;
+            if let Some(c) = cd_safe.as_deref_mut() {
+                *c = true;
+            }
+        }
+        Some(Preset::Archive) => *s = ExportSettings::default(),
+        _ => {}
+    }
+
+    let out_rate = s.rate_for(pr);
+    if s.format.is_float() {
+        ui.label(
+            egui::RichText::new(
+                "32-bit float preserves the full mix, including peaks above 0 dBFS.",
+            )
+            .weak()
+            .small(),
+        );
+    } else if out_rate != pr {
+        ui.label(
+            egui::RichText::new(format!(
+                "Converted from {pr} Hz to {out_rate} Hz with high-quality resampling."
+            ))
+            .weak()
+            .small(),
+        );
+    }
+    if let Some(c) = cd_safe {
+        ui.separator();
+        cd_safe_ui(ui, p, c, out_rate);
+    }
+}
+
 /// The CD-safe option with a live count of sector boundary errors.
-fn cd_safe_ui(ui: &mut egui::Ui, p: &Project, cd_safe: &mut bool) {
+fn cd_safe_ui(ui: &mut egui::Ui, p: &Project, cd_safe: &mut bool, out_rate: u32) {
     let Some(sector) = render::sector_len(p.sample_rate) else {
         ui.colored_label(
             ui.visuals().warn_fg_color,
@@ -1975,13 +2124,11 @@ fn cd_safe_ui(ui: &mut egui::Ui, p: &Project, cd_safe: &mut bool) {
         ui.visuals().weak_text_color()
     };
     ui.label(egui::RichText::new(text).color(color).small());
-    if p.sample_rate != 44_100 {
+    if out_rate != 44_100 {
         ui.label(
-            egui::RichText::new(format!(
-                "Audio CDs are 44.1 kHz; burning software will convert this {} Hz project. \
-                 CD-safe boundaries stay exact through that conversion.",
-                p.sample_rate
-            ))
+            egui::RichText::new(
+                "Audio CDs are 44.1 kHz: choose the Audio CD preset to burn these files directly.",
+            )
             .weak()
             .small(),
         );

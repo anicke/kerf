@@ -129,6 +129,7 @@ pub fn save(project: &Project, path: &Path) -> Result<()> {
                     ExportSettings {
                         format: SampleFormat::Float32,
                         dither: false,
+                        ..Default::default()
                     },
                 )?;
                 let _ = src.path.set(file.clone());

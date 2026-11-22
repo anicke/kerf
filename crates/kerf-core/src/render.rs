@@ -7,6 +7,7 @@ use crate::buffer::AudioBuffer;
 use crate::error::{Error, Result};
 use crate::io::{ExportSettings, WavWriter};
 use crate::project::{Project, TrackId};
+use crate::resample::{exact_len, Sink, StreamResampler};
 use crate::store::Samples;
 use crate::util::sanitize_file_name;
 use crate::Frame;
@@ -202,7 +203,55 @@ pub fn measure(project: &Project, start: Frame, end: Frame, opts: &RenderOptions
 /// Progress callback: receives 0..=1, returns `false` to cancel.
 pub type Progress<'a> = &'a mut dyn FnMut(f64) -> bool;
 
-/// Render a range to a WAV file.
+/// Render `start..end`, convert to the channel count and sample rate in
+/// `settings`, and stream the result to `sink` in chunks.
+fn render_converted(
+    project: &Project,
+    start: Frame,
+    end: Frame,
+    opts: &RenderOptions,
+    settings: ExportSettings,
+    progress: Progress,
+    sink: &mut Sink,
+) -> Result<()> {
+    let pc = project.channels as usize;
+    let oc = settings.channels_for(project.channels) as usize;
+    let mut resampler = StreamResampler::new(
+        project.sample_rate,
+        settings.rate_for(project.sample_rate),
+        oc,
+    )?;
+    let mut mapped: Vec<Vec<f32>> = vec![Vec::new(); oc];
+    let total = (end - start) as f64;
+    let mut done = 0usize;
+    for_each_chunk(project, start, end, opts, |chunk, n| {
+        map_channels(chunk, n, pc, &mut mapped);
+        resampler.push(&mapped, n, sink)?;
+        done += n;
+        Ok(progress(done as f64 / total))
+    })?;
+    resampler.finish(sink)
+}
+
+/// Project channels → output channels: same count copies, mono is duplicated,
+/// mono output averages, otherwise the first channels are kept.
+fn map_channels(chunk: &[Vec<f32>], n: usize, pc: usize, out: &mut [Vec<f32>]) {
+    let oc = out.len();
+    for (o, dst) in out.iter_mut().enumerate() {
+        dst.clear();
+        if pc == 1 {
+            dst.extend_from_slice(&chunk[0][..n]);
+        } else if oc == 1 {
+            dst.extend((0..n).map(|i| (0..pc).map(|c| chunk[c][i]).sum::<f32>() / pc as f32));
+        } else if o < pc {
+            dst.extend_from_slice(&chunk[o][..n]);
+        } else {
+            dst.resize(n, 0.0);
+        }
+    }
+}
+
+/// Render a range to a WAV file (converted per `settings`).
 pub fn export_range(
     project: &Project,
     start: Frame,
@@ -215,14 +264,21 @@ pub fn export_range(
     if end <= start {
         return Err(Error::InvalidRange);
     }
-    let mut writer = WavWriter::create(path, project.sample_rate, project.channels, settings)?;
-    let total = (end - start) as f64;
-    let mut done = 0usize;
-    let result = for_each_chunk(project, start, end, opts, |chunk, n| {
-        writer.write_planar(chunk, n)?;
-        done += n;
-        Ok(progress(done as f64 / total))
-    });
+    let mut writer = WavWriter::create(
+        path,
+        settings.rate_for(project.sample_rate),
+        settings.channels_for(project.channels),
+        settings,
+    )?;
+    let result = render_converted(
+        project,
+        start,
+        end,
+        opts,
+        settings,
+        progress,
+        &mut |c: &[&[f32]]| writer.write_planar(c, c[0].len()),
+    );
     match result {
         Ok(()) => writer.finalize(),
         Err(e) => {
@@ -271,6 +327,12 @@ pub fn regions_from_markers(project: &Project, end: Frame) -> Vec<Region> {
 }
 
 /// Export each region to `dir` as `NN - <base> - <region>.wav`.
+///
+/// Regions must be contiguous (as from [`regions_from_markers`]). The whole
+/// span is rendered and converted in **one pass** and cut into files at the
+/// converted boundaries, so the files join back seamlessly even when the
+/// sample rate is converted (resampling each file separately would leave
+/// tiny discontinuities at every boundary).
 pub fn export_regions(
     project: &Project,
     regions: &[Region],
@@ -280,18 +342,72 @@ pub fn export_regions(
     settings: ExportSettings,
     progress: Progress,
 ) -> Result<Vec<PathBuf>> {
-    let total: Frame = regions.iter().map(|r| r.end - r.start).sum();
-    let mut done: Frame = 0;
-    let mut paths = Vec::new();
-    for (i, r) in regions.iter().enumerate() {
-        let file = sanitize_file_name(&format!("{:02} - {} - {}", i + 1, base_name, r.name));
-        let path = dir.join(format!("{file}.wav"));
-        let len = r.end - r.start;
-        export_range(project, r.start, r.end, opts, &path, settings, &mut |p| {
-            progress((done as f64 + p * len as f64) / total.max(1) as f64)
-        })?;
-        done += len;
-        paths.push(path);
+    let (Some(first), Some(last)) = (regions.first(), regions.last()) else {
+        return Ok(Vec::new());
+    };
+    if regions.windows(2).any(|w| w[0].end != w[1].start) {
+        return Err(Error::InvalidRange);
+    }
+    let paths: Vec<PathBuf> = regions
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            dir.join(format!(
+                "{}.wav",
+                sanitize_file_name(&format!("{:02} - {} - {}", i + 1, base_name, r.name))
+            ))
+        })
+        .collect();
+    let (in_rate, out_rate) = (project.sample_rate, settings.rate_for(project.sample_rate));
+    let channels = settings.channels_for(project.channels);
+    // Where each file ends, in output frames from the start.
+    let ends: Vec<u64> = regions
+        .iter()
+        .map(|r| exact_len(r.end - first.start, in_rate, out_rate))
+        .collect();
+
+    let mut current = 0usize;
+    let mut written = 0u64;
+    let mut writer: Option<WavWriter> = None;
+    let mut sink = |c: &[&[f32]]| -> Result<()> {
+        let len = c[0].len() as u64;
+        let mut off = 0u64;
+        while off < len && current < paths.len() {
+            let w = match &mut writer {
+                Some(w) => w,
+                None => writer.insert(WavWriter::create(
+                    &paths[current],
+                    out_rate,
+                    channels,
+                    settings,
+                )?),
+            };
+            let n = (ends[current] - written).min(len - off);
+            let part: Vec<&[f32]> = c
+                .iter()
+                .map(|ch| &ch[off as usize..(off + n) as usize])
+                .collect();
+            w.write_planar(&part, n as usize)?;
+            written += n;
+            off += n;
+            if written == ends[current] {
+                writer.take().unwrap().finalize()?;
+                current += 1;
+            }
+        }
+        Ok(())
+    };
+    render_converted(
+        project,
+        first.start,
+        last.end,
+        opts,
+        settings,
+        progress,
+        &mut sink,
+    )?;
+    if let Some(w) = writer.take() {
+        w.finalize()?;
     }
     Ok(paths)
 }
@@ -686,6 +802,7 @@ mod tests {
         let settings = ExportSettings {
             format: crate::io::SampleFormat::Float32,
             dither: false,
+            ..Default::default()
         };
         let paths = export_regions(
             &p,
@@ -727,5 +844,135 @@ mod tests {
             assert!(cue.contains(&format!("INDEX 01 {}", cue_time(r.start, 44_100))));
             assert_eq!(r.start * 75 % 44_100, 0, "exact: no rounding in the CUE");
         }
+    }
+
+    #[test]
+    fn export_converts_rate_and_channels() {
+        let mut p = Project::new(48_000, 1);
+        let sine: Vec<f32> = (0..48_000)
+            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48_000.0).sin() * 0.5)
+            .collect();
+        p.add_source_as_track("mono", None, AudioBuffer::new(48_000, vec![sine]), 0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cd.wav");
+        let settings = ExportSettings {
+            dither: false,
+            ..ExportSettings::AUDIO_CD
+        };
+        export_range(
+            &p,
+            0,
+            48_000,
+            &RenderOptions::default(),
+            &path,
+            settings,
+            &mut |_| true,
+        )
+        .unwrap();
+        let out = crate::io::decode_file(&path).unwrap();
+        assert_eq!(
+            (out.sample_rate(), out.num_channels(), out.frames()),
+            (44_100, 2, 44_100)
+        );
+        assert_eq!(
+            out.channel(0),
+            out.channel(1),
+            "mono duplicated to both sides"
+        );
+        for i in 10_000..10_050 {
+            let ideal = (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 44_100.0).sin() * 0.5;
+            assert!((out.channel(0)[i] - ideal).abs() < 0.01, "frame {i}");
+        }
+    }
+
+    #[test]
+    fn audio_cd_split_from_48k_is_gapless_and_sector_exact() {
+        // A 48 kHz show, CD-safe at its own rate (640-frame sectors), exported as Audio CD.
+        let mut p = Project::new(48_000, 2);
+        let n = 48_000 * 12 + 77;
+        let l: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.002).sin() * 0.6).collect();
+        p.add_source_as_track(
+            "show",
+            None,
+            AudioBuffer::new(48_000, vec![l.clone(), l]),
+            0,
+        );
+        p.add_marker(48_000 * 4 + 311, "Two");
+        p.add_marker(48_000 * 8 + 5, "Three");
+        let regions = snap_to_sectors(
+            &regions_from_markers(&p, p.length()),
+            sector_len(48_000).unwrap(),
+        );
+        let settings = ExportSettings {
+            dither: false,
+            ..ExportSettings::AUDIO_CD
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let paths = export_regions(
+            &p,
+            &regions,
+            &RenderOptions::default(),
+            dir.path(),
+            "Live",
+            settings,
+            &mut |_| true,
+        )
+        .unwrap();
+
+        let whole_path = dir.path().join("whole.wav");
+        export_range(
+            &p,
+            regions[0].start,
+            regions.last().unwrap().end,
+            &RenderOptions::default(),
+            &whole_path,
+            settings,
+            &mut |_| true,
+        )
+        .unwrap();
+        let whole = crate::io::decode_file(&whole_path).unwrap();
+
+        let mut joined: Vec<Vec<f32>> = vec![Vec::new(); 2];
+        for (i, path) in paths.iter().enumerate() {
+            let b = crate::io::decode_file(path).unwrap();
+            assert_eq!((b.sample_rate(), b.num_channels()), (44_100, 2));
+            assert_eq!(b.frames() % 588, 0, "file {i} is whole CD sectors (no SBE)");
+            for (j, ch) in joined.iter_mut().enumerate() {
+                ch.extend_from_slice(b.channel(j));
+            }
+        }
+        assert_eq!(
+            joined,
+            whole.channels(),
+            "split files rejoin to exactly the one-piece export"
+        );
+    }
+
+    #[test]
+    fn non_contiguous_regions_are_rejected() {
+        let (p, _) = ramp_project();
+        let regions = vec![
+            Region {
+                start: 0,
+                end: 10,
+                name: "a".into(),
+            },
+            Region {
+                start: 20,
+                end: 30,
+                name: "b".into(),
+            },
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let r = export_regions(
+            &p,
+            &regions,
+            &RenderOptions::default(),
+            dir.path(),
+            "x",
+            ExportSettings::default(),
+            &mut |_| true,
+        );
+        assert!(matches!(r, Err(Error::InvalidRange)));
     }
 }

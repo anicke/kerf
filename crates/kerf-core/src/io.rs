@@ -232,6 +232,41 @@ pub struct ExportSettings {
     pub format: SampleFormat,
     /// TPDF dither when reducing to integer formats.
     pub dither: bool,
+    /// Convert to this sample rate on export (`None`: the project rate).
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
+    /// Convert to this many channels on export (`None`: the project's).
+    /// Mono becomes stereo by duplication; stereo becomes mono by averaging.
+    #[serde(default)]
+    pub channels: Option<u16>,
+}
+
+impl ExportSettings {
+    /// Red Book audio CD: 16-bit, 44.1 kHz stereo, dithered.
+    pub const AUDIO_CD: ExportSettings = ExportSettings {
+        format: SampleFormat::Int16,
+        dither: true,
+        sample_rate: Some(44_100),
+        channels: Some(2),
+    };
+
+    /// Output sample rate for a project at `project_rate`.
+    pub fn rate_for(&self, project_rate: u32) -> u32 {
+        self.sample_rate.unwrap_or(project_rate)
+    }
+
+    /// Output channel count for a project with `project_channels`.
+    pub fn channels_for(&self, project_channels: u16) -> u16 {
+        self.channels.unwrap_or(project_channels).max(1)
+    }
+
+    /// Whether these settings produce Red Book CD audio from a project.
+    pub fn is_audio_cd(&self, project_rate: u32, project_channels: u16) -> bool {
+        self.format == SampleFormat::Int16
+            && self.dither
+            && self.rate_for(project_rate) == 44_100
+            && self.channels_for(project_channels) == 2
+    }
 }
 
 impl Default for ExportSettings {
@@ -239,6 +274,8 @@ impl Default for ExportSettings {
         Self {
             format: SampleFormat::Float32,
             dither: true,
+            sample_rate: None,
+            channels: None,
         }
     }
 }
@@ -400,6 +437,7 @@ mod tests {
             ExportSettings {
                 format: SampleFormat::Float32,
                 dither: false,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -420,6 +458,7 @@ mod tests {
             ExportSettings {
                 format: SampleFormat::Int24,
                 dither: false,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -442,6 +481,7 @@ mod tests {
             ExportSettings {
                 format: SampleFormat::Int16,
                 dither: true,
+                ..Default::default()
             },
         )
         .unwrap();

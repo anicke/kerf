@@ -34,6 +34,11 @@ Focused purely on editing: no plugins or effects, just careful, non-destructive 
   sheet. The export dialog shows how many boundaries would otherwise be affected. Works at any rate
   that is a multiple of 75 Hz (44.1, 48, 88.2, 96 kHz): those sectors convert exactly to CD sectors.
   *Markers → Snap Markers to CD Sectors* moves the markers themselves.
+- **Export presets and conversion.** *Audio CD* sets 16-bit, 44.1 kHz stereo, TPDF dither and
+  CD-safe boundaries in one click, from a project at any rate; *Archive* keeps 32-bit float at the
+  project rate. Any export can convert sample rate (high-quality resampling) and channels (mono ↔
+  stereo). Split exports render and convert the whole album in one pass and cut it at the
+  converted boundaries, so resampled tracks still join seamlessly.
 - **Editing.** Cut/copy/paste (insert, overwrite, or mix), delete (close gap), silence (leave gap),
   trim to selection, insert silence, split, move and trim clips with snapping, clip gain,
   track gain/pan/mute/solo, and markers. Panning uses a constant-power law (−3 dB at centre) for
