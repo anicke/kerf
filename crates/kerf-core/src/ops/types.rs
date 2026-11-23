@@ -1,0 +1,707 @@
+//! Requests and responses of the operations layer, and their JSON forms.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use crate::project::AlbumInfo;
+use crate::util::{format_time, parse_time, TimeFormat};
+use crate::Frame;
+
+// ---------------------------------------------------------------------------
+// Times
+// ---------------------------------------------------------------------------
+
+/// A time as given by a caller. In JSON either a number of **seconds**
+/// (`83.5`) or a string: `"1:23.5"` (m:ss), `"1:02:03"` (h:mm:ss), `"83.5s"`
+/// (seconds) or `"4008000smp"` (sample frames, exact).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Time {
+    Seconds(f64),
+    Text(String),
+}
+
+impl Time {
+    pub fn secs(s: f64) -> Self {
+        Self::Seconds(s)
+    }
+
+    pub fn frames(f: Frame) -> Self {
+        Self::Text(format!("{f}smp"))
+    }
+
+    /// Resolve to sample frames at `sample_rate`.
+    pub fn to_frames(&self, sample_rate: u32) -> Option<Frame> {
+        match self {
+            Time::Seconds(s) if s.is_finite() && *s >= 0.0 => {
+                Some((s * sample_rate as f64).round() as Frame)
+            }
+            Time::Seconds(_) => None,
+            Time::Text(t) => {
+                let t = t.trim();
+                for suffix in ["samples", "sample", "smp"] {
+                    if let Some(n) = t.strip_suffix(suffix) {
+                        return n.trim().parse().ok();
+                    }
+                }
+                let t = t.strip_suffix('s').unwrap_or(t);
+                parse_time(t, sample_rate, TimeFormat::MinSec)
+            }
+        }
+    }
+}
+
+impl std::str::FromStr for Time {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Time::Text(s.to_string()))
+    }
+}
+
+/// A time reported back: exact frames, seconds, and a readable `m:ss.mmm`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimePos {
+    pub seconds: f64,
+    pub frames: Frame,
+    pub time: String,
+}
+
+impl TimePos {
+    pub fn new(frames: Frame, sample_rate: u32) -> Self {
+        let seconds = frames as f64 / sample_rate.max(1) as f64;
+        Self {
+            seconds: (seconds * 1e6).round() / 1e6,
+            frames,
+            time: format_time(frames, sample_rate),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+/// Which tracks an operation applies to (by id); all tracks when absent.
+pub type Tracks = Option<Vec<u64>>;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape {
+    Linear,
+    #[default]
+    EqualPower,
+    SCurve,
+    Exponential,
+}
+
+impl From<Shape> for crate::FadeShape {
+    fn from(s: Shape) -> Self {
+        match s {
+            Shape::Linear => Self::Linear,
+            Shape::EqualPower => Self::EqualPower,
+            Shape::SCurve => Self::SCurve,
+            Shape::Exponential => Self::Exponential,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Paste {
+    #[default]
+    Insert,
+    Overwrite,
+    Mix,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    #[default]
+    Peak,
+    Rms,
+    Loudness,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SongPlacement {
+    /// Where the music resumes, minus the pre-roll.
+    #[default]
+    MusicStart,
+    /// The quietest moment of the gap.
+    QuietestPoint,
+}
+
+/// What to export.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportKind {
+    /// The mix (or `start..end` of it) as one file. `path` is the file.
+    #[default]
+    Mix,
+    /// One file per marker region (album tracks). `path` is a folder.
+    Tracks,
+    /// The whole mix as one file plus a CUE sheet. `path` is the audio file.
+    Cue,
+    /// Every unmuted track as its own file. `path` is a folder.
+    Stems,
+}
+
+/// Starting points for export settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Preset {
+    /// 32-bit float WAV at the project's rate and channels (lossless, no dither).
+    #[default]
+    Wav,
+    /// Red Book audio CD: 16-bit 44.1 kHz stereo WAV, dithered; CD-safe track boundaries.
+    Cd,
+    /// FLAC 24-bit at the project's rate and channels.
+    Flac,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Bits {
+    #[serde(alias = "16")]
+    Int16,
+    #[serde(alias = "24")]
+    Int24,
+    #[serde(alias = "32")]
+    Int32,
+    #[serde(alias = "float")]
+    Float32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileType {
+    Wav,
+    Flac,
+}
+
+/// Export parameters: a preset plus optional overrides.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportOptions {
+    pub kind: ExportKind,
+    pub preset: Preset,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<Bits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<FileType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dither: Option<bool>,
+    /// Snap track boundaries to CD sectors (tracks and cue exports).
+    /// Defaults to on for the `cd` preset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cd_safe: Option<bool>,
+    /// Mix exports only: the range to export (default: everything).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<Time>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<Time>,
+    /// File name base for track exports (default: the project or source name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_name: Option<String>,
+}
+
+/// One operation. In JSON: `{"op": "split", "at": "1:23.5"}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Request {
+    // --- Session ------------------------------------------------------------
+    /// Start an empty project (it adopts the format of the first import).
+    New,
+    /// Open a `.kerf` project, or an audio file as a new project.
+    Open {
+        path: PathBuf,
+    },
+    /// Add an audio file as a new track (at `at`, default 0).
+    Import {
+        path: PathBuf,
+        #[serde(default)]
+        at: Option<Time>,
+    },
+    /// Save the project (to `path`, or where it was opened from). Existing
+    /// files other than the project's own are only replaced with `force`.
+    Save {
+        #[serde(default)]
+        path: Option<PathBuf>,
+        #[serde(default)]
+        force: bool,
+    },
+    Undo,
+    Redo,
+    History,
+
+    // --- Inspect ------------------------------------------------------------
+    /// Tracks, clips, markers, album details, format and length.
+    Info,
+    /// Peak, RMS, loudness and clipping of a range as heard.
+    Analyze {
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    /// Find song starts in a live recording; `apply` places them as markers
+    /// (replacing earlier detected markers in the range).
+    DetectSongs {
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+        /// Exact number of songs, if known (the clearest gaps win).
+        #[serde(default)]
+        songs: Option<usize>,
+        /// 0..1, how readily a gap counts (ignored with `songs`). Default 0.5.
+        #[serde(default)]
+        sensitivity: Option<f32>,
+        #[serde(default)]
+        min_song_secs: Option<f64>,
+        #[serde(default)]
+        min_gap_secs: Option<f64>,
+        #[serde(default)]
+        pre_roll_secs: Option<f64>,
+        #[serde(default)]
+        placement: SongPlacement,
+        /// Song titles in order (numbering like "1." is removed).
+        #[serde(default)]
+        setlist: Vec<String>,
+        #[serde(default)]
+        apply: bool,
+    },
+
+    // --- Edit ---------------------------------------------------------------
+    Split {
+        at: Time,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    /// Remove a range and close the gap (markers move along when all tracks are affected).
+    Delete {
+        start: Time,
+        end: Time,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    /// Silence a range without moving anything.
+    Clear {
+        start: Time,
+        end: Time,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    /// Keep only the range.
+    Crop {
+        start: Time,
+        end: Time,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    InsertSilence {
+        at: Time,
+        length: Time,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    Copy {
+        start: Time,
+        end: Time,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    /// Copy, then delete (closing the gap).
+    Cut {
+        start: Time,
+        end: Time,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    Paste {
+        at: Time,
+        #[serde(default)]
+        tracks: Tracks,
+        #[serde(default)]
+        mode: Paste,
+    },
+    /// Change gain by `db` (of a range, or whole tracks).
+    Gain {
+        db: f64,
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    Normalize {
+        #[serde(default)]
+        mode: Level,
+        /// dBFS for peak/RMS, LUFS for loudness. Defaults: -1, -20, -23.
+        #[serde(default)]
+        target: Option<f64>,
+        #[serde(default)]
+        ceiling_db: Option<f64>,
+        /// One gain per track (default) instead of one shared gain.
+        #[serde(default = "yes")]
+        independent: bool,
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    FadeIn {
+        start: Time,
+        end: Time,
+        #[serde(default)]
+        shape: Shape,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    FadeOut {
+        start: Time,
+        end: Time,
+        #[serde(default)]
+        shape: Shape,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    RemoveFades {
+        start: Time,
+        end: Time,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    /// Crossfade automatically where clips overlap.
+    SetAutoCrossfade {
+        on: bool,
+    },
+
+    // --- Markers ------------------------------------------------------------
+    AddMarker {
+        at: Time,
+        name: String,
+    },
+    /// Change any of a marker's fields. Empty `artist`/`isrc` clear them.
+    UpdateMarker {
+        id: u64,
+        #[serde(default)]
+        at: Option<Time>,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        artist: Option<String>,
+        #[serde(default)]
+        isrc: Option<String>,
+    },
+    RemoveMarker {
+        id: u64,
+    },
+    /// Remove all markers.
+    ClearMarkers,
+
+    // --- Album --------------------------------------------------------------
+    /// Set album details; fields left out are kept. An empty `cover` removes it.
+    SetAlbum {
+        #[serde(default)]
+        artist: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        year: Option<String>,
+        #[serde(default)]
+        genre: Option<String>,
+        #[serde(default)]
+        comment: Option<String>,
+        #[serde(default)]
+        cover: Option<PathBuf>,
+    },
+    /// Tracks (one per marker) with their levels, plus the album's.
+    AlbumSummary {
+        #[serde(default)]
+        cd_safe: bool,
+    },
+    /// Level the whole album with one gain to `target_lufs`, keeping the peak
+    /// at or below `ceiling_db`.
+    AlbumLoudness {
+        target_lufs: f64,
+        #[serde(default)]
+        ceiling_db: Option<f64>,
+    },
+
+    // --- Export -------------------------------------------------------------
+    /// Render to file(s). Existing files are only replaced with `force`;
+    /// `dry_run` reports what would be written without writing.
+    Export {
+        path: PathBuf,
+        #[serde(flatten)]
+        options: ExportOptions,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        force: bool,
+    },
+}
+
+fn yes() -> bool {
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Responses
+// ---------------------------------------------------------------------------
+
+/// Result of an operation: a one-line summary of what happened, plus data.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Response {
+    pub summary: String,
+    #[serde(flatten)]
+    pub data: Data,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Data {
+    None,
+    Track { track: u64 },
+    Marker { marker: u64 },
+    History(HistoryInfo),
+    Project(Box<ProjectInfo>),
+    Levels(Levels),
+    Songs(SongsReport),
+    Normalized { tracks: Vec<NormalizedTrack> },
+    Album(AlbumReport),
+    AlbumLoudness(LoudnessChange),
+    Export(ExportReport),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HistoryInfo {
+    /// Undoable steps, oldest first.
+    pub undo: Vec<String>,
+    pub redo: Option<String>,
+    pub dirty: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProjectInfo {
+    pub path: Option<PathBuf>,
+    pub dirty: bool,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub length: TimePos,
+    pub master_gain_db: Option<f64>,
+    pub auto_crossfade: bool,
+    pub album: AlbumInfo,
+    pub tracks: Vec<TrackInfo>,
+    pub markers: Vec<MarkerInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrackInfo {
+    pub id: u64,
+    pub name: String,
+    pub gain_db: Option<f64>,
+    pub pan: f32,
+    pub muted: bool,
+    pub solo: bool,
+    pub clips: Vec<ClipInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClipInfo {
+    pub id: u64,
+    pub source: String,
+    pub start: TimePos,
+    pub end: TimePos,
+    pub gain_db: Option<f64>,
+    pub fade_in_secs: f64,
+    pub fade_out_secs: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MarkerInfo {
+    pub id: u64,
+    pub position: TimePos,
+    pub name: String,
+    /// Placed by song detection.
+    pub auto: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<String>,
+}
+
+/// Levels in dBFS / LUFS; `None` where silent or too short to measure.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Levels {
+    pub start: TimePos,
+    pub end: TimePos,
+    pub peak_db: Option<f64>,
+    pub rms_db: Option<f64>,
+    pub lufs: Option<f64>,
+    /// Samples above 0 dBFS: these clip when exported to an integer format.
+    pub clipped_samples: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SongsReport {
+    /// Typical song loudness of the analysed range (LUFS).
+    pub reference_lufs: f64,
+    pub songs: Vec<SongStart>,
+    /// Whether markers were placed.
+    pub applied: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SongStart {
+    pub position: TimePos,
+    pub name: String,
+    /// How clearly this is a song change, 0..1 (`None` for the range start).
+    pub confidence: Option<f32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NormalizedTrack {
+    pub track: u64,
+    pub measured: Option<f64>,
+    pub gain_db: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AlbumReport {
+    pub album: AlbumInfo,
+    pub tracks: Vec<AlbumTrack>,
+    pub lufs: Option<f64>,
+    pub peak_db: Option<f64>,
+    pub master_gain_db: Option<f64>,
+    /// CD tracks whose length is not a whole number of sectors (`None` if
+    /// the sample rate can't be made CD-safe).
+    pub sector_errors: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AlbumTrack {
+    pub number: usize,
+    pub title: String,
+    /// Marker the track starts at (`None` for audio before the first marker).
+    pub marker: Option<u64>,
+    pub start: TimePos,
+    pub length: TimePos,
+    pub lufs: Option<f64>,
+    pub peak_db: Option<f64>,
+    /// Things worth checking: `near_clipping`, `short` (< 30 s), `long` (> 20 min).
+    pub flags: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoudnessChange {
+    pub before_lufs: f64,
+    pub after_lufs: f64,
+    pub before_peak_db: Option<f64>,
+    pub after_peak_db: Option<f64>,
+    pub gain_db: f64,
+    /// Whether the peak ceiling (not the target) set the gain.
+    pub limited_by_ceiling: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExportReport {
+    pub written: bool,
+    pub files: Vec<ExportFile>,
+    pub format: String,
+    /// CD tracks with sector boundary errors (CD-format track exports only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sector_errors: Option<usize>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExportFile {
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Timeline span the file covers (absent for CUE sheets).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<TimePos>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<TimePos>,
+    /// Would replace an existing file.
+    pub exists: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    InvalidRequest,
+    InvalidArgument,
+    NotFound,
+    Exists,
+    Io,
+    Decode,
+    Encode,
+    ProjectFormat,
+    InvalidRange,
+    NothingSelected,
+    Silent,
+    NothingToUndo,
+    Cancelled,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, thiserror::Error)]
+#[error("{message}")]
+pub struct OpError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl OpError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn arg(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidArgument, message)
+    }
+}
+
+impl From<crate::Error> for OpError {
+    fn from(e: crate::Error) -> Self {
+        use crate::Error as E;
+        let code = match &e {
+            E::Io(_) => ErrorCode::Io,
+            E::Decode { .. } => ErrorCode::Decode,
+            E::Encode(_) | E::Resample(_) => ErrorCode::Encode,
+            E::ProjectFormat(_) => ErrorCode::ProjectFormat,
+            E::InvalidRange => ErrorCode::InvalidRange,
+            E::NothingSelected => ErrorCode::NothingSelected,
+            E::NotFound(_) => ErrorCode::NotFound,
+            E::Silent => ErrorCode::Silent,
+            E::Cancelled => ErrorCode::Cancelled,
+            E::Unsupported(_) => ErrorCode::Unsupported,
+        };
+        Self::new(code, e.to_string())
+    }
+}

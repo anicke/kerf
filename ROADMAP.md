@@ -15,7 +15,9 @@ Shipped: 32-bit float non-destructive engine with unlimited undo; sample-exact s
 trim, fades and crossfades; peak, RMS and BS.1770 loudness normalization; memory-mapped disk cache
 (flat RAM use); song-start detection for live recordings with setlist naming; CD-safe split and CUE
 export with an Audio CD preset; keyboard navigation, markers panel, crash recovery, preferences and
-device selection; typed times and formats, zero-crossing snap, vertical zoom and dB view.
+device selection; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
+FLAC export, album loudness and the Album window; a JSON operations layer and the `kerf-cli`
+command-line tool.
 
 ## Positioning: what makes Kerf stand out
 
@@ -55,6 +57,13 @@ The strongest differentiator, and Kerf's core use case. Builds directly on song 
 Size: about 3–4 days.
 
 ## Phase 2: Operations layer and CLI
+
+**Status:** done. `kerf_core::ops` has every capability as a typed, JSON-convertible request and
+response (with a `Session` holding one project and its undo history), and `kerf-cli` offers `info`,
+`analyze`, `detect`, `split`, `export` and `run` (any operation as JSON). The CLI binary is named
+`kerf-cli` because `kerf` is the GUI; on Windows the GUI binary has no console, so the two stay
+separate. Not yet done: "find silences" (planned for the MCP inspect tools) and moving the GUI's
+own edits onto `ops`.
 
 The foundation for both the CLI and MCP.
 

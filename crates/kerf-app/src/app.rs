@@ -250,12 +250,7 @@ impl KerfApp {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         let ctx = &cc.egui_ctx;
         ctx.set_theme(egui::Theme::Dark);
-        // KERF_CACHE_DIR overrides the platform cache location (e.g. a faster drive).
-        let opened = match std::env::var_os("KERF_CACHE_DIR") {
-            Some(dir) => AudioCache::open(dir),
-            None => AudioCache::open_default(),
-        };
-        let cache = match opened {
+        let cache = match AudioCache::open_default() {
             Ok(c) => {
                 let c = Arc::new(c);
                 let pruner = c.clone();

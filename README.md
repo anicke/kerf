@@ -89,6 +89,7 @@ Requires Rust 1.95+ (pinned to 1.96 by `rust-toolchain.toml`).
 ```sh
 cargo run --release -p kerf              # launch
 cargo run --release -p kerf -- song.wav  # open files / a .kerf project
+cargo run --release -p kerf-cli -- --help
 cargo test --workspace
 ```
 
@@ -104,12 +105,39 @@ falls back to keeping audio in memory.
 
 On Linux, building needs the ALSA development headers (`libasound2-dev` / `alsa-lib-devel`).
 
+## Command line
+
+`kerf-cli` runs the same engine without the GUI, for batch work and scripts. Every command prints
+a readable report, or one JSON document per input with `--json`. Nothing is overwritten without
+`--force`, `--dry-run` shows exactly which files would be written, and a failed run exits non-zero.
+
+```sh
+# A live show to a finished album: find 14 songs, name them from the setlist, tag, level the
+# whole album to -16 LUFS, and write CD-ready tracks plus a gapless image with a CUE sheet.
+kerf-cli split show.wav --songs 14 --setlist setlist.txt --artist "The Band" --album "Live" \
+    --loudness -16 --preset cd --cue --out album/ --save show.kerf
+
+kerf-cli detect show.wav --songs 14                 # just list the song starts
+kerf-cli analyze *.wav                              # peak, RMS, LUFS and clipping per file
+kerf-cli info show.kerf                             # tracks, clips, markers, album details
+kerf-cli export *.flac --preset cd --out cd/        # batch convert
+kerf-cli export show.kerf --kind tracks --preset flac --out flac/ --dry-run
+kerf-cli run --ops edits.jsonl show.wav             # any operation, as JSON
+```
+
+Times are seconds (`83.5`), `m:ss` (`1:23.5`), `h:mm:ss`, or exact samples (`4008000smp`).
+`kerf-cli run` accepts any engine operation (open, import, save, undo/redo, split, delete, clear,
+crop, copy/cut/paste, gain, normalize, fades, markers, album details and loudness, export) as a
+JSON array or one object per line, e.g. `{"op": "fade_out", "start": "41:10", "end": "41:18"}`.
+These are the operations of `kerf_core::ops`, which the planned MCP server will expose too.
+
 ## Layout
 
 | Crate | Purpose |
 |---|---|
 | `crates/kerf-core` | UI-free engine: model, edits, undo, mixing, analysis, I/O, projects. Fully unit-tested. |
 | `crates/kerf-app`  | Desktop app (egui/eframe), real-time playback (cpal). |
+| `crates/kerf-cli`  | `kerf-cli` command-line tool on the `kerf_core::ops` operations layer. |
 
 `cargo run -p kerf-core --example demo_project -- <dir>` generates a demo project that exercises
 most features.

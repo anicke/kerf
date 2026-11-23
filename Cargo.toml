@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kerf-core", "crates/kerf-app"]
+members = ["crates/kerf-core", "crates/kerf-app", "crates/kerf-cli"]
 
 [workspace.package]
 version = "0.1.0"

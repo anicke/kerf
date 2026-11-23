@@ -27,6 +27,7 @@ pub mod edit;
 pub mod encode;
 pub mod error;
 pub mod io;
+pub mod ops;
 pub mod peaks;
 pub mod project;
 pub mod render;

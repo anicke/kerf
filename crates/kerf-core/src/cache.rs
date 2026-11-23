@@ -94,9 +94,13 @@ impl AudioCache {
         })
     }
 
-    /// The platform cache location, e.g. `~/.cache/kerf/audio` on Linux,
+    /// `KERF_CACHE_DIR` if set (e.g. a faster drive), otherwise the platform
+    /// cache location: `~/.cache/kerf/audio` on Linux,
     /// `~/Library/Caches/kerf/audio` on macOS, `%LOCALAPPDATA%\kerf\audio` on Windows.
     pub fn open_default() -> Result<Self> {
+        if let Some(dir) = std::env::var_os("KERF_CACHE_DIR") {
+            return Self::open(dir);
+        }
         let base = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
         Self::open(base.join("kerf").join("audio"))
     }

@@ -436,6 +436,40 @@ pub fn regions_from_markers(project: &Project, end: Frame) -> Vec<Region> {
     regions
 }
 
+/// The files [`export_regions`] writes for `regions`, in order.
+pub fn region_paths(
+    regions: &[Region],
+    dir: &Path,
+    base_name: &str,
+    container: crate::encode::Container,
+) -> Vec<PathBuf> {
+    regions
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let name = sanitize_file_name(&format!("{:02} - {} - {}", i + 1, base_name, r.name));
+            dir.join(format!("{name}.{}", container.extension()))
+        })
+        .collect()
+}
+
+/// The tracks [`export_stems`] exports (every unmuted track), with their files.
+pub fn stem_paths<'a>(
+    project: &'a Project,
+    dir: &Path,
+    container: crate::encode::Container,
+) -> Vec<(&'a crate::project::Track, PathBuf)> {
+    let tracks: Vec<_> = project.tracks.iter().filter(|t| !t.muted).collect();
+    tracks
+        .into_iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let name = sanitize_file_name(&format!("{:02} - {}", i + 1, t.name));
+            (t, dir.join(format!("{name}.{}", container.extension())))
+        })
+        .collect()
+}
+
 /// Export each region to `dir` as `NN - <base> - <region>.<ext>`, tagged
 /// with its title, track number and the album's details.
 ///
@@ -459,14 +493,7 @@ pub fn export_regions(
     if regions.windows(2).any(|w| w[0].end != w[1].start) {
         return Err(Error::InvalidRange);
     }
-    let paths: Vec<PathBuf> = regions
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let name = sanitize_file_name(&format!("{:02} - {} - {}", i + 1, base_name, r.name));
-            dir.join(format!("{name}.{}", settings.container.extension()))
-        })
-        .collect();
+    let paths = region_paths(regions, dir, base_name, settings.container);
     let (in_rate, out_rate) = (project.sample_rate, settings.rate_for(project.sample_rate));
     let channels = settings.channels_for(project.channels);
     // Where each file ends, in output frames from the start.
@@ -688,16 +715,14 @@ pub fn export_stems(
     settings: ExportSettings,
     progress: Progress,
 ) -> Result<Vec<PathBuf>> {
-    let tracks: Vec<_> = project.tracks.iter().filter(|t| !t.muted).collect();
+    let stems = stem_paths(project, dir, settings.container);
+    let n = stems.len() as f64;
     let mut paths = Vec::new();
-    for (i, t) in tracks.iter().enumerate() {
-        let name = sanitize_file_name(&format!("{:02} - {}", i + 1, t.name));
-        let path = dir.join(format!("{name}.{}", settings.container.extension()));
+    for (i, (t, path)) in stems.into_iter().enumerate() {
         let tags = Tags {
             title: t.name.clone(),
             ..album_tags(project)
         };
-        let n = tracks.len() as f64;
         export_range_tagged(
             project,
             start,
