@@ -194,7 +194,9 @@ for trying song-start detection.
 | Key | Action | Key | Action |
 |---|---|---|---|
 | Space | Play / stop (returns to start) | Shift+Space | Stop at the playhead |
-| P | Preview around the cursor | L | Toggle loop |
+| P | Preview around the cursor | Shift+L | Toggle loop |
+| L / J | Play forwards / backwards; press again for 2×, 4×, 8× | K | Stop at the playhead |
+| K+L / K+J (hold) | Play forwards / backwards at half speed | Ctrl+drag ruler | Scrub |
 | ← / → | Nudge cursor (skip 5 s while playing) | Shift+← / → | Extend selection |
 | Ctrl+← / → | Previous / next edit point (clip edge, marker) | Ctrl+Shift+← / → | Extend to edit point |
 | ↑ / ↓ | Previous / next track (Shift adds) | Home / End | Start / end (Shift extends) |
@@ -213,12 +215,16 @@ for trying song-start detection.
 | Shift+Z | Selection to zero crossings | Double-click | Select clip, or song between markers |
 | Alt+↑ / ↓ | Taller / shorter tracks (selected, or all) | Ctrl+Shift+O | Open a recent project |
 
-Space and Shift+Space can be swapped in Preferences.
+Space and Shift+Space can be swapped in Preferences. J/K/L work like the shuttle keys of video
+editors: speed changes the pitch, as with tape.
 
 Mouse: drag in a track to select time (across tracks). Drag a clip's title bar to move it, even to
 another track. Drag clip edges to trim. Drag the small squares at a clip's top corners to set its fades
 (right-click the clip to change the curve or remove them). Hold Alt to disable snapping. Ctrl+wheel zooms, Shift+wheel
-scrolls. Drag the ruler to select across all tracks. Double-click a marker to rename it.
+scrolls. Drag the ruler to select across all tracks. **Scrub** by dragging the playhead (or the
+cursor's handle at the bottom of the ruler), or Ctrl+drag anywhere in the ruler: the sound follows
+the mouse like tape under your hand, backwards too, and falls silent when you hold still. If
+playback was running it carries on from where you let go. Double-click a marker to rename it.
 Drag the line under a track (in its header or waveform) to change its height; hold Ctrl to resize
 every track, double-click the line to reset it. *View → Fit Tracks to Window* shares the space
 evenly.

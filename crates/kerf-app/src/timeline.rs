@@ -79,6 +79,10 @@ pub enum Drag {
     Scrollbar {
         grab: f32,
     },
+    /// Dragging the playhead to hear the audio; `resume` playback afterwards.
+    Scrub {
+        resume: bool,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -899,6 +903,14 @@ fn marker_at(p: &Project, geo: &Geo, x: f32) -> Option<MarkerId> {
         .map(|(id, _)| id)
 }
 
+/// Whether a press in the ruler at `pos` grabs the playhead (to scrub): the
+/// playhead line while playing, or the cursor's handle at the bottom.
+fn on_playhead_handle(app: &KerfApp, geo: &Geo, pos: Pos2) -> bool {
+    let near = |f: Frame| (geo.x(f as f64) - pos.x).abs() <= 6.0;
+    (app.player.is_playing() && near(app.player.position()))
+        || (near(app.cursor) && pos.y >= geo.ruler.bottom() - 10.0)
+}
+
 fn ruler_interaction(
     app: &mut KerfApp,
     p: &Project,
@@ -908,16 +920,27 @@ fn ruler_interaction(
     press_origin: Option<Pos2>,
     mods: egui::Modifiers,
 ) {
+    if resp.hovered()
+        && app.drag.is_none()
+        && pointer.is_some_and(|h| on_playhead_handle(app, geo, h))
+    {
+        resp.ctx.set_cursor_icon(CursorIcon::ResizeHorizontal);
+    }
     if resp.drag_started() {
         if let Some(o) = press_origin {
-            app.drag = Some(match marker_at(p, geo, o.x) {
-                Some(id) => Drag::Marker {
-                    id,
-                    pos: p.markers.iter().find(|m| m.id == id).unwrap().position,
-                },
-                None => Drag::RulerSelect {
-                    anchor: snap(app, p, geo, geo.frame(o.x), None, mods.alt),
-                },
+            // Ctrl+drag anywhere, or grab the playhead: scrub.
+            app.drag = Some(if mods.command || on_playhead_handle(app, geo, o) {
+                app.begin_scrub(geo.frame(o.x))
+            } else {
+                match marker_at(p, geo, o.x) {
+                    Some(id) => Drag::Marker {
+                        id,
+                        pos: p.markers.iter().find(|m| m.id == id).unwrap().position,
+                    },
+                    None => Drag::RulerSelect {
+                        anchor: snap(app, p, geo, geo.frame(o.x), None, mods.alt),
+                    },
+                }
             });
         }
     }
@@ -932,6 +955,16 @@ fn ruler_interaction(
                     app.sel.tracks.clear();
                     app.cursor = f;
                 }
+                Drag::Scrub { .. } => {
+                    resp.ctx.set_cursor_icon(CursorIcon::ResizeHorizontal);
+                    app.scrub_to(geo.frame(pos.x));
+                    // Follow the mouse past the edges.
+                    if pos.x > geo.lanes.right() - 4.0 {
+                        app.view.scroll += 12.0 * geo.spp;
+                    } else if pos.x < geo.lanes.left() + 4.0 {
+                        app.view.scroll = (app.view.scroll - 12.0 * geo.spp).max(0.0);
+                    }
+                }
                 _ => {}
             }
         }
@@ -942,6 +975,7 @@ fn ruler_interaction(
                 app.edit("Move marker", |p| edit::move_marker(p, id, pos));
             }
             Some(Drag::RulerSelect { .. }) => app.finish_selection(),
+            Some(Drag::Scrub { resume }) => app.end_scrub(resume),
             None => {}
             other => app.drag = other,
         }

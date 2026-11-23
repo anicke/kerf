@@ -15,6 +15,11 @@
 //! the generation from the UI thread, and the callback discards blocks from
 //! older generations immediately, so transport changes are heard at once even
 //! though audio is buffered ahead.
+//!
+//! Besides normal playback the renderer can play at any speed in either
+//! direction (J/K/L shuttle) and *scrub*: the position then chases a target
+//! the UI moves with the mouse, like tape under a hand, with only a few blocks
+//! of read-ahead so the sound follows the hand closely.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -31,14 +36,35 @@ use rtrb::{Consumer, Producer, RingBuffer};
 const BLOCK: usize = 512;
 /// How far the feeder renders ahead of what is heard.
 const READ_AHEAD_SECS: f64 = 0.25;
+/// Read-ahead while scrubbing, in blocks (about 20 ms at 48 kHz): enough to
+/// ride out a scheduling hiccup, short enough to feel attached to the mouse.
+const SCRUB_AHEAD_BLOCKS: usize = 2;
+/// Scrubbing covers the distance to the target in about this time…
+const SCRUB_FOLLOW_SECS: f64 = 0.06;
+/// …with speed changes smoothed over this time (no zipper noise).
+const SCRUB_SMOOTH_SECS: f64 = 0.015;
+/// Fastest scrub, relative to normal speed.
+const SCRUB_MAX_SPEED: f64 = 4.0;
+/// Below this speed scrub audio fades out, so a resting hand is silent
+/// rather than holding one sample value.
+const SCRUB_QUIET_SPEED: f64 = 0.05;
 
 enum Cmd {
+    /// Play from `start` to `end` at `speed` (1 = normal). With a negative
+    /// speed playback runs backwards and `end` (≤ `start`) is where it stops.
     Play {
         gen: u32,
         project: Arc<Project>,
         start: Frame,
         end: Frame,
         loop_start: Option<Frame>,
+        speed: f64,
+    },
+    /// Follow [`Shared::scrub_target`] from `at` until stopped.
+    Scrub {
+        gen: u32,
+        project: Arc<Project>,
+        at: Frame,
     },
     /// Edited project: continue from the audible position with the new content.
     Update {
@@ -52,14 +78,14 @@ enum Cmd {
 #[derive(Clone, Copy, Debug)]
 struct Mark {
     gen: u32,
-    /// Project frame at the start of the block.
-    pos: Frame,
+    /// Project position at the start of the block.
+    pos: f64,
+    /// Project frames per device frame in the block (negative in reverse).
+    step: f64,
     /// Frames of real audio in the block (the rest is silence padding).
     frames: u32,
     /// Playback ends after this block.
     last: bool,
-    /// Project sample rate, to turn played device frames into a position.
-    project_rate: u32,
     /// First block after an edit: continues from the audible position, so the
     /// output skips whatever it already played of the old audio meanwhile.
     resume: bool,
@@ -77,6 +103,8 @@ pub struct Shared {
     /// Blocks the output has finished or discarded (lets the feeder track
     /// how much of the ring holds current audio).
     consumed_blocks: AtomicU64,
+    /// Where scrubbing should go (project frame, f64 bits).
+    scrub_target: AtomicU64,
 }
 
 pub struct Player {
@@ -92,6 +120,9 @@ pub struct Player {
     buffer_frames: Option<u32>,
     /// Set when the chosen device or buffer could not be used.
     pub fallback_note: Option<String>,
+    /// Speed of the current playback (1 = normal, negative = reverse).
+    speed: f64,
+    scrubbing: bool,
 }
 
 /// Output devices as `(id, description)`.
@@ -124,6 +155,8 @@ impl Default for Player {
             device_id: None,
             buffer_frames: None,
             fallback_note: None,
+            speed: 1.0,
+            scrubbing: false,
         }
     }
 }
@@ -162,6 +195,15 @@ impl Player {
         self.shared.playing.load(Ordering::Relaxed)
     }
 
+    /// Speed of the current playback: 1 is normal, negative is reverse.
+    pub fn speed(&self) -> f64 {
+        self.speed
+    }
+
+    pub fn is_scrubbing(&self) -> bool {
+        self.scrubbing && self.is_playing()
+    }
+
     pub fn position(&self) -> Frame {
         self.shared.position.load(Ordering::Relaxed)
     }
@@ -192,18 +234,67 @@ impl Player {
         end: Frame,
         loop_start: Option<Frame>,
     ) -> Result<(), String> {
+        self.start(project, start, end, loop_start, 1.0)
+    }
+
+    /// Play from `start` at `speed` (negative: backwards) to the end, or
+    /// back to the beginning.
+    pub fn shuttle(
+        &mut self,
+        project: Arc<Project>,
+        start: Frame,
+        speed: f64,
+    ) -> Result<(), String> {
+        let end = if speed > 0.0 { project.length() } else { 0 };
+        self.start(project, start, end, None, speed)
+    }
+
+    fn start(
+        &mut self,
+        project: Arc<Project>,
+        start: Frame,
+        end: Frame,
+        loop_start: Option<Frame>,
+        speed: f64,
+    ) -> Result<(), String> {
         self.ensure_stream(project.sample_rate)?;
         let gen = self.bump_generation();
         self.shared.position.store(start, Ordering::Relaxed);
         self.shared.playing.store(true, Ordering::Relaxed);
+        self.speed = speed;
+        self.scrubbing = false;
         self.send(Cmd::Play {
             gen,
             project,
             start,
             end,
             loop_start,
+            speed,
         });
         Ok(())
+    }
+
+    /// Start scrubbing at `at`; move it with [`Player::scrub_to`] and end it
+    /// with [`Player::stop`].
+    pub fn scrub(&mut self, project: Arc<Project>, at: Frame) -> Result<(), String> {
+        self.ensure_stream(project.sample_rate)?;
+        let gen = self.bump_generation();
+        self.shared
+            .scrub_target
+            .store((at as f64).to_bits(), Ordering::Relaxed);
+        self.shared.position.store(at, Ordering::Relaxed);
+        self.shared.playing.store(true, Ordering::Relaxed);
+        self.speed = 0.0;
+        self.scrubbing = true;
+        self.send(Cmd::Scrub { gen, project, at });
+        Ok(())
+    }
+
+    /// Where scrubbing should head (the mouse position).
+    pub fn scrub_to(&self, frame: Frame) {
+        self.shared
+            .scrub_target
+            .store((frame as f64).to_bits(), Ordering::Relaxed);
     }
 
     /// Swap in an edited project while playing.
@@ -215,6 +306,7 @@ impl Player {
     }
 
     pub fn stop(&mut self) {
+        self.scrubbing = false;
         self.bump_generation();
         self.shared.playing.store(false, Ordering::Relaxed);
         self.send(Cmd::Stop);
@@ -364,7 +456,6 @@ fn pipeline(
         marks: mark_rx,
         shared,
         channels,
-        device_rate,
         current: None,
         played: 0,
         skip: 0,
@@ -445,9 +536,16 @@ impl Feeder {
                 start,
                 end,
                 loop_start,
+                speed,
             } => {
                 self.switch_generation(gen);
-                self.renderer.start(project, start, end, loop_start);
+                self.renderer.start(project, start, end, loop_start, speed);
+                self.active = true;
+                self.resume_next = false;
+            }
+            Cmd::Scrub { gen, project, at } => {
+                self.switch_generation(gen);
+                self.renderer.start_scrub(project, at);
                 self.active = true;
                 self.resume_next = false;
             }
@@ -482,25 +580,32 @@ impl Feeder {
 
     /// Render blocks until the read-ahead is full or playback ends.
     fn fill(&mut self) {
+        let target = if self.renderer.scrub.is_some() {
+            SCRUB_AHEAD_BLOCKS.min(self.target)
+        } else {
+            self.target
+        };
         while self.active
-            && self.ahead() < self.target as u64
+            && self.ahead() < target as u64
             && self.samples.slots() >= self.block.len()
             && self.marks.slots() >= 1
         {
-            let pos = self.renderer.pos();
+            if let Some(scrub) = &mut self.renderer.scrub {
+                scrub.target = f64::from_bits(self.shared.scrub_target.load(Ordering::Relaxed));
+            }
+            let pos = self.renderer.pos;
             let frames = self.renderer.render(&mut self.block);
             let last = frames < BLOCK;
             if self.samples.push_entire_slice(&self.block).is_err() {
                 return; // cannot happen: space was checked above
             }
-            let project_rate = self.renderer.project.as_ref().map_or(0, |p| p.sample_rate);
             let resume = std::mem::take(&mut self.resume_next);
             let _ = self.marks.push(Mark {
                 gen: self.gen,
                 pos,
+                step: self.renderer.last_step,
                 frames: frames as u32,
                 last,
-                project_rate,
                 resume,
             });
             self.pushed += 1;
@@ -511,6 +616,14 @@ impl Feeder {
     }
 }
 
+/// Scrubbing: the position chases `target` with a smoothed speed.
+struct Scrub {
+    target: f64,
+    /// Speed (relative to normal) and gain reached at the end of the last block.
+    speed: f64,
+    gain: f32,
+}
+
 /// Mixes the timeline at the device rate and channel layout.
 struct Renderer {
     device_rate: u32,
@@ -518,10 +631,28 @@ struct Renderer {
     project: Option<Arc<Project>>,
     /// Fractional project frame.
     pos: f64,
+    /// Where playback stops: the end going forwards, the start in reverse.
     end: Frame,
     loop_start: Option<Frame>,
+    /// 1 = normal; negative plays backwards.
+    speed: f64,
+    scrub: Option<Scrub>,
+    /// Project frames per device frame in the last block rendered.
+    last_step: f64,
     scratch: Vec<Vec<f32>>,
+    /// Source position and gain of each output frame (reverse and scrub).
+    path: Vec<f64>,
+    gains: Vec<f32>,
     opts: RenderOptions,
+}
+
+/// Project channel heard on device channel `d` (mono feeds every channel).
+fn source_channel(project_channels: usize, d: usize) -> Option<usize> {
+    if project_channels == 1 {
+        Some(0)
+    } else {
+        (d < project_channels).then_some(d)
+    }
 }
 
 impl Renderer {
@@ -533,11 +664,17 @@ impl Renderer {
             pos: 0.0,
             end: 0,
             loop_start: None,
+            speed: 1.0,
+            scrub: None,
+            last_step: 0.0,
             scratch: vec![vec![0.0; 16_384]; 8],
+            path: Vec::new(),
+            gains: Vec::new(),
             opts: RenderOptions::default(),
         }
     }
 
+    #[cfg(test)]
     fn pos(&self) -> Frame {
         self.pos as Frame
     }
@@ -548,10 +685,23 @@ impl Renderer {
         start: Frame,
         end: Frame,
         loop_start: Option<Frame>,
+        speed: f64,
     ) {
         self.replace(project, start);
         self.end = end;
         self.loop_start = loop_start;
+        self.speed = speed;
+        self.scrub = None;
+    }
+
+    fn start_scrub(&mut self, project: Arc<Project>, at: Frame) {
+        self.replace(project, at);
+        self.loop_start = None;
+        self.scrub = Some(Scrub {
+            target: at as f64,
+            speed: 0.0,
+            gain: 0.0,
+        });
     }
 
     fn replace(&mut self, project: Arc<Project>, at: Frame) {
@@ -563,24 +713,45 @@ impl Renderer {
         self.pos = at as f64;
     }
 
-    /// Fill `out` (interleaved device frames). Returns the number of frames of
-    /// audio produced; fewer than requested means playback reached its end
-    /// (the remainder is silence).
-    fn render(&mut self, out: &mut [f32]) -> usize {
-        let dc = self.device_channels;
-        let frames = out.len() / dc;
-        let Some(project) = self.project.clone() else {
-            out.fill(0.0);
-            return 0;
-        };
-        let pc = project.channels as usize;
-        let ratio = project.sample_rate as f64 / self.device_rate as f64;
-        let needed = (frames as f64 * ratio).ceil() as usize + 2;
-        if self.scratch[0].len() < needed {
+    fn ensure_scratch(&mut self, frames: usize) {
+        if self.scratch[0].len() < frames {
             for ch in &mut self.scratch {
-                ch.resize(needed, 0.0);
+                ch.resize(frames, 0.0);
             }
         }
+    }
+
+    /// Project frames per device frame at normal speed.
+    fn ratio(&self, project: &Project) -> f64 {
+        project.sample_rate as f64 / self.device_rate as f64
+    }
+
+    /// Fill `out` (interleaved device frames). Returns the number of frames of
+    /// audio produced; fewer than requested means playback reached its end
+    /// (the remainder is silence). Scrubbing never ends.
+    fn render(&mut self, out: &mut [f32]) -> usize {
+        let Some(project) = self.project.clone() else {
+            out.fill(0.0);
+            self.last_step = 0.0;
+            return 0;
+        };
+        if self.scrub.is_some() {
+            self.render_scrub(&project, out);
+            out.len() / self.device_channels
+        } else if self.speed < 0.0 {
+            self.render_reverse(&project, out)
+        } else {
+            self.render_forward(&project, out)
+        }
+    }
+
+    fn render_forward(&mut self, project: &Project, out: &mut [f32]) -> usize {
+        let dc = self.device_channels;
+        let frames = out.len() / dc;
+        let pc = project.channels as usize;
+        let ratio = self.ratio(project) * self.speed;
+        self.last_step = ratio;
+        self.ensure_scratch((frames as f64 * ratio).ceil() as usize + 2);
 
         let mut written = 0;
         while written < frames {
@@ -599,7 +770,7 @@ impl Renderer {
             let n = (frames - written).min((remaining_src / ratio).ceil().max(1.0) as usize);
             let src_frames =
                 ((frac0 + n as f64 * ratio).ceil() as usize + 2).min(self.scratch[0].len());
-            mix_into(&project, base, src_frames, &mut self.scratch, &self.opts);
+            mix_into(project, base, src_frames, &mut self.scratch, &self.opts);
 
             for i in 0..n {
                 let p = frac0 + i as f64 * ratio;
@@ -607,14 +778,7 @@ impl Renderer {
                 let f = (p - i0 as f64) as f32;
                 let frame_out = &mut out[(written + i) * dc..(written + i + 1) * dc];
                 for (d, slot) in frame_out.iter_mut().enumerate() {
-                    let src_ch = if pc == 1 {
-                        Some(0)
-                    } else if d < pc {
-                        Some(d)
-                    } else {
-                        None
-                    };
-                    *slot = match src_ch {
+                    *slot = match source_channel(pc, d) {
                         Some(c) => {
                             let s = &self.scratch[c];
                             if ratio == 1.0 {
@@ -632,6 +796,99 @@ impl Renderer {
         }
         frames
     }
+
+    /// Play backwards, stopping at `end`.
+    fn render_reverse(&mut self, project: &Project, out: &mut [f32]) -> usize {
+        let dc = self.device_channels;
+        let frames = out.len() / dc;
+        let step = self.ratio(project) * -self.speed;
+        self.last_step = -step;
+        let stop = self.end as f64;
+        let n = if self.pos < stop {
+            0
+        } else {
+            (((self.pos - stop) / step).floor() as usize + 1).min(frames)
+        };
+        let pos = self.pos;
+        self.path.clear();
+        self.path.extend((0..n).map(|i| pos - i as f64 * step));
+        if n > 0 {
+            self.render_path(project, out, n, false);
+        }
+        out[n * dc..].fill(0.0);
+        self.pos -= n as f64 * step;
+        n
+    }
+
+    /// Move towards the scrub target, the speed following how far away it is.
+    fn render_scrub(&mut self, project: &Project, out: &mut [f32]) {
+        let frames = out.len() / self.device_channels;
+        let rate = project.sample_rate as f64;
+        let ratio = self.ratio(project);
+        let len = project.length() as f64;
+        let secs = frames as f64 / self.device_rate as f64;
+        let Some(s) = self.scrub.as_mut() else {
+            return;
+        };
+        let dist = s.target.clamp(0.0, len) - self.pos;
+        let want = (dist / (SCRUB_FOLLOW_SECS * rate)).clamp(-SCRUB_MAX_SPEED, SCRUB_MAX_SPEED);
+        let alpha = 1.0 - (-secs / SCRUB_SMOOTH_SECS).exp();
+        let (s0, g0) = (s.speed, s.gain);
+        let mut s1 = s0 + (want - s0) * alpha;
+        if dist.abs() < 1.0 && s1.abs() < SCRUB_QUIET_SPEED {
+            s1 = 0.0;
+        }
+        let g1 = (s1.abs() / SCRUB_QUIET_SPEED).min(1.0) as f32;
+        s.speed = s1;
+        s.gain = g1;
+        if s0 == 0.0 && s1 == 0.0 {
+            out.fill(0.0);
+            self.last_step = 0.0;
+            return;
+        }
+        // Ramp speed and gain across the block.
+        self.path.clear();
+        self.gains.clear();
+        let mut p = self.pos;
+        for i in 0..frames {
+            let t = (i as f64 + 0.5) / frames as f64;
+            self.path.push(p);
+            self.gains.push(g0 + (g1 - g0) * t as f32);
+            p = (p + (s0 + (s1 - s0) * t) * ratio).clamp(0.0, len);
+        }
+        self.render_path(project, out, frames, true);
+        self.last_step = (p - self.pos) / frames as f64;
+        self.pos = p;
+    }
+
+    /// Write the first `n` output frames from the source positions in
+    /// `self.path` (≥ 0), scaled by `self.gains` when `gained`.
+    fn render_path(&mut self, project: &Project, out: &mut [f32], n: usize, gained: bool) {
+        let dc = self.device_channels;
+        let pc = project.channels as usize;
+        let (lo, hi) = self.path[..n]
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+        let base = lo.max(0.0).floor() as Frame;
+        let span = (hi.ceil() as Frame).saturating_sub(base) as usize + 2;
+        self.ensure_scratch(span);
+        mix_into(project, base, span, &mut self.scratch, &self.opts);
+        for i in 0..n {
+            let x = (self.path[i] - base as f64).max(0.0);
+            let i0 = x.floor() as usize;
+            let f = (x - i0 as f64) as f32;
+            let g = if gained { self.gains[i] } else { 1.0 };
+            for d in 0..dc {
+                out[i * dc + d] = match source_channel(pc, d) {
+                    Some(c) => {
+                        let s = &self.scratch[c];
+                        g * (s[i0] + (s[i0 + 1] - s[i0]) * f)
+                    }
+                    None => 0.0,
+                };
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -643,7 +900,6 @@ struct Output {
     marks: Consumer<Mark>,
     shared: Arc<Shared>,
     channels: usize,
-    device_rate: u32,
     /// Block being played and how many of its frames have been played.
     current: Option<Mark>,
     played: usize,
@@ -688,12 +944,10 @@ impl Output {
                     Ok(m) => {
                         self.current = Some(m);
                         self.played = 0;
-                        if m.resume && m.gen == gen {
+                        if m.resume && m.gen == gen && m.step != 0.0 {
                             let heard = self.shared.position.load(Ordering::Relaxed);
-                            let behind = heard.saturating_sub(m.pos);
-                            self.skip = (behind * self.device_rate as u64
-                                / m.project_rate.max(1) as u64)
-                                as usize;
+                            let behind = (heard as f64 - m.pos) / m.step;
+                            self.skip = behind.max(0.0) as usize;
                         }
                     }
                     Err(_) => {
@@ -732,8 +986,8 @@ impl Output {
                 i += n;
                 // What is heard, even old audio still playing out after an edit (the
                 // edited audio then resumes from exactly here).
-                let within = self.played.min(m.frames as usize) as u64;
-                let pos = m.pos + within * m.project_rate as u64 / self.device_rate.max(1) as u64;
+                let within = self.played.min(m.frames as usize) as f64;
+                let pos = (m.pos + within * m.step).max(0.0) as Frame;
                 self.shared.position.store(pos, Ordering::Relaxed);
                 if m.gen == gen && m.last && self.played >= m.frames as usize {
                     self.shared.playing.store(false, Ordering::Relaxed);
@@ -815,7 +1069,7 @@ mod tests {
     #[test]
     fn renders_sample_exact_and_stops_at_end() {
         let mut r = Renderer::new(1000, 2);
-        r.start(ramp_project(), 10, 20, None);
+        r.start(ramp_project(), 10, 20, None, 1.0);
         let mut out = vec![9.0f32; 2 * 16];
         assert_eq!(r.render(&mut out), 10);
         for i in 0..10 {
@@ -831,7 +1085,7 @@ mod tests {
     #[test]
     fn loops_back_to_loop_start() {
         let mut r = Renderer::new(1000, 1);
-        r.start(ramp_project(), 0, 4, Some(2));
+        r.start(ramp_project(), 0, 4, Some(2), 1.0);
         let mut out = vec![0.0f32; 8];
         assert_eq!(r.render(&mut out), 8);
         let want: Vec<f32> = [0, 1, 2, 3, 2, 3, 2, 3].iter().map(|&i| v(i)).collect();
@@ -842,7 +1096,7 @@ mod tests {
     fn resamples_to_device_rate() {
         // Project at 1 kHz, device at 2 kHz: every other output sample interpolates.
         let mut r = Renderer::new(2000, 1);
-        r.start(ramp_project(), 0, 1000, None);
+        r.start(ramp_project(), 0, 1000, None, 1.0);
         let mut out = vec![0.0f32; 10];
         r.render(&mut out);
         for (i, s) in out.iter().enumerate() {
@@ -885,6 +1139,7 @@ mod tests {
                     start,
                     end,
                     loop_start: None,
+                    speed: 1.0,
                 })
                 .unwrap();
             self.pump();
@@ -980,6 +1235,99 @@ mod tests {
         r.play(1500, 2000); // play() pumps the feeder: new audio is queued behind the old
         assert_eq!(r.pull(30), (1500..1530).map(v).collect::<Vec<_>>());
         assert_eq!(r.shared.position.load(Ordering::Relaxed), 1530);
+    }
+
+    #[test]
+    fn plays_backwards_and_stops_at_the_start() {
+        let mut r = Renderer::new(1000, 1);
+        r.start(ramp_project(), 5, 0, None, -1.0);
+        let mut out = vec![9.0f32; 10];
+        assert_eq!(r.render(&mut out), 6);
+        let want: Vec<f32> = [5, 4, 3, 2, 1, 0].iter().map(|&i| v(i)).collect();
+        assert_eq!(&out[..6], &want[..]);
+        assert!(out[6..].iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn shuttles_at_double_speed() {
+        let mut r = Renderer::new(1000, 1);
+        r.start(ramp_project(), 100, 2000, None, 2.0);
+        let mut out = vec![0.0f32; 5];
+        r.render(&mut out);
+        assert_eq!(out, [100, 102, 104, 106, 108].map(v));
+        let mut r = Renderer::new(1000, 1);
+        r.start(ramp_project(), 100, 0, None, -4.0);
+        r.render(&mut out);
+        assert_eq!(out, [100, 96, 92, 88, 84].map(v));
+    }
+
+    #[test]
+    fn scrub_follows_the_target_then_falls_silent() {
+        let mut r = Renderer::new(1000, 1);
+        r.start_scrub(ramp_project(), 100);
+        let mut out = vec![0.0f32; 16];
+        // Resting: silence.
+        r.render(&mut out);
+        assert!(out.iter().all(|&s| s == 0.0));
+        assert_eq!(r.pos(), 100);
+        // Move the target ahead: audio plays forwards towards it…
+        r.scrub.as_mut().unwrap().target = 300.0;
+        let mut heard = Vec::new();
+        for _ in 0..200 {
+            r.render(&mut out);
+            heard.extend_from_slice(&out);
+        }
+        assert!(heard.iter().any(|&s| s != 0.0));
+        // …arrives without passing it by more than a little, and goes quiet.
+        assert!((r.pos - 300.0).abs() < 1.0, "{}", r.pos);
+        assert!(out.iter().all(|&s| s == 0.0));
+        // Backwards too.
+        r.scrub.as_mut().unwrap().target = 50.0;
+        for _ in 0..200 {
+            r.render(&mut out);
+        }
+        assert!((r.pos - 50.0).abs() < 1.0, "{}", r.pos);
+        // Never beyond the project.
+        r.scrub.as_mut().unwrap().target = 1e9;
+        for _ in 0..2000 {
+            r.render(&mut out);
+        }
+        assert!(r.pos <= 2000.0);
+    }
+
+    #[test]
+    fn reverse_position_is_reported_through_the_ring() {
+        let mut r = rig(1000);
+        let gen = r.shared.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        r.shared.playing.store(true, Ordering::Relaxed);
+        r.tx.send(Cmd::Play {
+            gen,
+            project: ramp_project(),
+            start: 1500,
+            end: 0,
+            loop_start: None,
+            speed: -1.0,
+        })
+        .unwrap();
+        r.pump();
+        assert_eq!(r.pull(3), [1500, 1499, 1498].map(v));
+        r.pull(97);
+        assert_eq!(r.shared.position.load(Ordering::Relaxed), 1400);
+    }
+
+    #[test]
+    fn scrubbing_keeps_little_audio_queued() {
+        let mut r = rig(48_000);
+        let gen = r.shared.generation.fetch_add(1, Ordering::AcqRel) + 1;
+        r.shared.playing.store(true, Ordering::Relaxed);
+        r.tx.send(Cmd::Scrub {
+            gen,
+            project: ramp_project(),
+            at: 0,
+        })
+        .unwrap();
+        r.pump();
+        assert_eq!(r.feeder.ahead(), SCRUB_AHEAD_BLOCKS as u64);
     }
 
     #[test]

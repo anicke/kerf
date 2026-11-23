@@ -15,7 +15,7 @@ Shipped: 32-bit float non-destructive engine with unlimited undo; sample-exact s
 trim, fades and crossfades; peak, RMS and BS.1770 loudness normalization; memory-mapped disk cache
 (flat RAM use); song-start detection for live recordings with setlist naming; CD-safe split and CUE
 export with an Audio CD preset; keyboard navigation, markers panel, crash recovery, preferences and
-device selection; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
+device selection; scrubbing and J/K/L shuttle; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
 FLAC export, album loudness and the Album window; a JSON operations layer and the `kerf-cli`
 command-line tool; the `kerf-mcp` MCP server with waveform images, also working live inside the app; FFmpeg as an
 optional decoder.
@@ -154,7 +154,8 @@ Size: about 2–3 days.
 
 From the comparison with established editors:
 
-- Scrubbing (drag the playhead to hear) and J/K/L shuttle.
+- ~~Scrubbing and J/K/L shuttle~~ (done: drag the playhead or Ctrl+drag the ruler; J/K/L up to
+  8× either way, K+J/L for half speed; loop moved to Shift+L).
 - Undo history panel (click to jump back several steps).
 - Statistics and loudness panel: selection peak, true peak, RMS, LUFS, plus a live loudness meter.
 - ~~Recent files~~ (done: *File → Open Recent* and Ctrl+Shift+O).

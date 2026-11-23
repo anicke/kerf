@@ -333,6 +333,14 @@ pub enum Action {
     PlayStop,
     StopAtPlayhead,
     PreviewCursor,
+    /// L / J: play forwards / backwards, faster with each press.
+    ShuttleForward,
+    ShuttleReverse,
+    /// The same at half speed, while K is held.
+    ShuttleSlowForward,
+    ShuttleSlowReverse,
+    /// K: stop shuttling at the playhead.
+    ShuttleStop,
     CursorLeft,
     CursorRight,
     ExtendLeft,
@@ -390,6 +398,8 @@ pub struct KerfApp {
     pub player: Player,
     pub play_revision: u64,
     pub loop_playback: bool,
+    /// J or L, while held with K for half-speed play.
+    shuttle_hold: Option<Key>,
     pub fade_shape: FadeShape,
     pub paste_mode: PasteMode,
     pub export_settings: ExportSettings,
@@ -445,6 +455,7 @@ impl KerfApp {
             player: Player::default(),
             play_revision: 0,
             loop_playback: false,
+            shuttle_hold: None,
             fade_shape: FadeShape::EqualPower,
             paste_mode: PasteMode::Insert,
             export_settings: ExportSettings::default(),
@@ -812,6 +823,15 @@ impl KerfApp {
                     self.play_stop();
                 }
             }
+            ShuttleForward => self.shuttle(1.0, false),
+            ShuttleReverse => self.shuttle(-1.0, false),
+            ShuttleSlowForward => self.shuttle(1.0, true),
+            ShuttleSlowReverse => self.shuttle(-1.0, true),
+            ShuttleStop => {
+                if self.player.is_playing() && !self.player.is_scrubbing() {
+                    self.stop_at_playhead();
+                }
+            }
             PreviewCursor => {
                 let sr = self.project().sample_rate as f64;
                 let before = (self.prefs.preview_before * sr) as Frame;
@@ -1073,6 +1093,70 @@ impl KerfApp {
         }
     }
 
+    /// J / L shuttle: start in direction `dir` (±1) at normal speed, or at
+    /// half speed when `slow`; pressing again in the same direction doubles
+    /// the speed (up to 8×), the other direction starts over at 1×.
+    fn shuttle(&mut self, dir: f64, slow: bool) {
+        let playing = self.player.is_playing() && !self.player.is_scrubbing();
+        let current = if playing { self.player.speed() } else { 0.0 };
+        let speed = if slow {
+            0.5 * dir
+        } else if current * dir > 0.0 {
+            (current.abs() * 2.0).clamp(1.0, MAX_SHUTTLE_SPEED) * dir
+        } else {
+            dir
+        };
+        let from = if playing {
+            self.player.position()
+        } else {
+            self.cursor
+        };
+        self.start_shuttle(from, speed);
+    }
+
+    fn start_shuttle(&mut self, from: Frame, speed: f64) {
+        let len = self.project().length();
+        if (speed > 0.0 && from >= len) || (speed < 0.0 && from == 0) {
+            if self.player.is_playing() {
+                self.stop_at_playhead();
+            }
+            return;
+        }
+        let snapshot = Arc::new(self.project().clone());
+        self.play_revision = self.doc.revision();
+        if let Err(e) = self.player.shuttle(snapshot, from, speed) {
+            self.error(format!("Playback failed: {e}"));
+        }
+    }
+
+    /// Start scrubbing at `at` (dragging the playhead).
+    pub fn begin_scrub(&mut self, at: Frame) -> crate::timeline::Drag {
+        let resume = self.player.is_playing() && !self.player.is_scrubbing();
+        let at = at.min(self.project().length());
+        let snapshot = Arc::new(self.project().clone());
+        self.play_revision = self.doc.revision();
+        if let Err(e) = self.player.scrub(snapshot, at) {
+            self.error(format!("Playback failed: {e}"));
+        }
+        self.sel.range = None;
+        self.cursor = at;
+        crate::timeline::Drag::Scrub { resume }
+    }
+
+    pub fn scrub_to(&mut self, at: Frame) {
+        let at = at.min(self.project().length());
+        self.cursor = at;
+        self.player.scrub_to(at);
+    }
+
+    /// Stop scrubbing; carry on playing from there if playback was running.
+    pub fn end_scrub(&mut self, resume: bool) {
+        self.player.stop();
+        if resume {
+            self.play_stop();
+        }
+    }
+
     /// `f` moved to the nearest zero crossing when that snapping is on.
     pub fn zero_snap(&self, f: Frame) -> Frame {
         if !self.prefs.snap_zero_crossings {
@@ -1226,7 +1310,12 @@ impl KerfApp {
     /// Move the cursor; if playing, continue playing from there.
     pub fn seek(&mut self, frame: Frame) {
         self.cursor = frame;
-        if self.player.is_playing() {
+        if self.player.is_scrubbing() {
+            return;
+        }
+        if self.player.is_playing() && self.player.speed() != 1.0 {
+            self.start_shuttle(frame, self.player.speed());
+        } else if self.player.is_playing() {
             let len = self.project().length();
             if frame < len {
                 self.start_playback(frame, len, self.loop_playback.then_some(0));
@@ -1664,6 +1753,7 @@ impl KerfApp {
             (shift, Key::End, Action::ExtendToEnd),
             (shift, Key::Space, Action::StopAtPlayhead),
             (shift, Key::Z, Action::ZeroCrossings),
+            (shift, Key::L, Action::ToggleLoop),
             (Modifiers::NONE, Key::Space, Action::PlayStop),
             (Modifiers::NONE, Key::ArrowLeft, Action::CursorLeft),
             (Modifiers::NONE, Key::ArrowRight, Action::CursorRight),
@@ -1677,7 +1767,9 @@ impl KerfApp {
             (Modifiers::NONE, Key::D, Action::ToggleDbScale),
             (Modifiers::NONE, Key::S, Action::Split),
             (Modifiers::NONE, Key::M, Action::AddMarker),
-            (Modifiers::NONE, Key::L, Action::ToggleLoop),
+            (Modifiers::NONE, Key::J, Action::ShuttleReverse),
+            (Modifiers::NONE, Key::K, Action::ShuttleStop),
+            (Modifiers::NONE, Key::L, Action::ShuttleForward),
             (Modifiers::NONE, Key::N, Action::ToggleSnap),
             (Modifiers::NONE, Key::Delete, Action::Delete),
             (Modifiers::NONE, Key::Backspace, Action::Delete),
@@ -1694,7 +1786,21 @@ impl KerfApp {
             (Modifiers::NONE, Key::Escape, Action::SelectNone),
         ];
         let mut fired = Vec::new();
+        let mut k_down = false;
         ctx.input_mut(|i| {
+            // J/K/L act on presses, not on key repeat: holding L must not keep
+            // speeding up, nor holding K keep stopping.
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: Key::J | Key::K | Key::L,
+                        repeat: true,
+                        ..
+                    }
+                )
+            });
+            k_down = i.key_down(Key::K);
             // egui turns Ctrl+C/X/V into clipboard events rather than key presses.
             i.events.retain(|e| match e {
                 egui::Event::Copy => {
@@ -1717,8 +1823,24 @@ impl KerfApp {
                 }
             }
         });
-        for a in fired {
+        for mut a in fired {
+            // K held with J or L: half speed for as long as J or L is held.
+            if k_down && matches!(a, Action::ShuttleForward | Action::ShuttleReverse) {
+                let forward = a == Action::ShuttleForward;
+                self.shuttle_hold = Some(if forward { Key::L } else { Key::J });
+                a = if forward {
+                    Action::ShuttleSlowForward
+                } else {
+                    Action::ShuttleSlowReverse
+                };
+            }
             self.perform(ctx, a);
+        }
+        if let Some(key) = self.shuttle_hold {
+            if !ctx.input(|i| i.key_down(key)) {
+                self.shuttle_hold = None;
+                self.perform(ctx, Action::ShuttleStop);
+            }
         }
     }
 
@@ -1955,6 +2077,28 @@ impl KerfApp {
                     &mut act,
                 );
                 ui.separator();
+                item(
+                    ui,
+                    "Shuttle Forward (faster)",
+                    "L",
+                    Action::ShuttleForward,
+                    &mut act,
+                );
+                item(
+                    ui,
+                    "Shuttle Backward (faster)",
+                    "J",
+                    Action::ShuttleReverse,
+                    &mut act,
+                );
+                item(ui, "Stop Shuttle", "K", Action::ShuttleStop, &mut act);
+                ui.label(
+                    egui::RichText::new(
+                        "Hold K with J or L for half speed.\nDrag the playhead in the ruler to scrub.",
+                    )
+                    .weak(),
+                );
+                ui.separator();
                 item(ui, "Go to Start", "Home", Action::GoStart, &mut act);
                 item(ui, "Go to End", "End", Action::GoEnd, &mut act);
                 item(
@@ -1986,7 +2130,7 @@ impl KerfApp {
                     &mut act,
                 );
                 ui.separator();
-                ui.checkbox(&mut self.loop_playback, "Loop (L)");
+                ui.checkbox(&mut self.loop_playback, "Loop (Shift+L)");
             });
             ui.menu_button("Markers", |ui| {
                 item(ui, "Add Marker", "M", Action::AddMarker, &mut act);
@@ -2144,10 +2288,14 @@ impl KerfApp {
                     self.perform(&ctx, Action::GoEnd);
                 }
                 if button(ui, Icon::Loop, self.loop_playback, field_h)
-                    .on_hover_text("Loop playback (L)")
+                    .on_hover_text("Loop playback (Shift+L)")
                     .clicked()
                 {
                     self.loop_playback = !self.loop_playback;
+                }
+                if playing && !self.player.is_scrubbing() && self.player.speed() != 1.0 {
+                    ui.label(egui::RichText::new(speed_label(self.player.speed())).monospace())
+                        .on_hover_text("Shuttle speed (J / K / L)");
                 }
                 ui.separator();
 
@@ -3076,6 +3224,13 @@ impl eframe::App for KerfApp {
         self.poll_assistant(&ctx);
         self.shortcuts(&ctx);
 
+        // A scrub lasts only as long as its drag.
+        if self.player.is_scrubbing()
+            && !matches!(self.drag, Some(crate::timeline::Drag::Scrub { .. }))
+        {
+            self.player.stop();
+        }
+
         // Keep playback in sync with edits and update meters.
         if self.player.is_playing() {
             if self.doc.revision() != self.play_revision {
@@ -3925,3 +4080,17 @@ drag clip edges to trim · drag the squares at a clip's top corners for fades ·
 drag selection edges to adjust · double-click between markers to select a song ·
 click the time fields to type a time (right-click for the format) · Alt+wheel vertical zoom ·
 Ctrl+wheel zoom · Shift+wheel scroll · Alt disables snapping.";
+
+/// Fastest J / L shuttle speed.
+const MAX_SHUTTLE_SPEED: f64 = 8.0;
+
+/// Shuttle speed for the toolbar, e.g. "» 2×" or "« ½×".
+fn speed_label(speed: f64) -> String {
+    let dir = if speed < 0.0 { '«' } else { '»' };
+    let mag = speed.abs();
+    if mag == 0.5 {
+        format!("{dir} ½×")
+    } else {
+        format!("{dir} {mag}×")
+    }
+}
