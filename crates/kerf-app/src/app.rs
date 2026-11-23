@@ -46,6 +46,9 @@ pub struct View {
     pub vzoom: f32,
     /// Draw waveforms on a dB scale (quiet detail made visible).
     pub db_scale: bool,
+    /// Length of the material in frames (at least a second), set each
+    /// frame; zoom and scroll stay within it.
+    pub content: f64,
 }
 
 pub const DEFAULT_TRACK_H: f32 = 120.0;
@@ -115,28 +118,121 @@ impl Default for View {
             lane_height: 400.0,
             vzoom: 1.0,
             db_scale: false,
+            content: 48_000.0,
         }
     }
 }
 
 impl View {
     pub const MIN_SPP: f64 = 1.0 / 64.0;
+    /// Room shown after the end of the material, as a part of the view.
+    pub const END_MARGIN: f64 = 0.1;
 
-    /// Zoom by `factor` keeping the frame under lane x-offset `anchor_px` fixed.
+    /// Most zoomed out: all the material plus the end margin fills the view.
+    pub fn max_spp(&self) -> f64 {
+        (self.content / ((1.0 - Self::END_MARGIN) * self.lane_width.max(1.0) as f64))
+            .max(Self::MIN_SPP)
+    }
+
+    /// Furthest scroll: the end of the material at the end margin.
+    pub fn max_scroll(&self) -> f64 {
+        (self.content - (1.0 - Self::END_MARGIN) * self.visible_frames()).max(0.0)
+    }
+
+    /// The length the scrollbar represents.
+    pub fn scroll_extent(&self) -> f64 {
+        (self.max_scroll() + self.visible_frames()).max(1.0)
+    }
+
+    /// Keep zoom and scroll within the material.
+    pub fn clamp(&mut self) {
+        self.spp = self.spp.clamp(Self::MIN_SPP, self.max_spp());
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll());
+    }
+
+    /// Zoom by `factor` keeping the frame under lane x-offset `anchor_px` fixed
+    /// (as far as the limits allow).
     pub fn zoom(&mut self, factor: f64, anchor_px: f32) {
         let anchor_frame = self.scroll + anchor_px as f64 * self.spp;
-        self.spp = (self.spp * factor).clamp(Self::MIN_SPP, 1e7);
-        self.scroll = (anchor_frame - anchor_px as f64 * self.spp).max(0.0);
+        self.spp = (self.spp * factor).clamp(Self::MIN_SPP, self.max_spp());
+        self.scroll = anchor_frame - anchor_px as f64 * self.spp;
+        self.clamp();
     }
 
     pub fn show_range(&mut self, start: Frame, end: Frame) {
         let len = end.saturating_sub(start).max(1) as f64;
-        self.spp = (len / (self.lane_width as f64 * 0.96)).clamp(Self::MIN_SPP, 1e7);
-        self.scroll = (start as f64 - self.lane_width as f64 * 0.02 * self.spp).max(0.0);
+        self.spp = (len / (self.lane_width as f64 * 0.96)).clamp(Self::MIN_SPP, self.max_spp());
+        self.scroll = start as f64 - self.lane_width as f64 * 0.02 * self.spp;
+        self.clamp();
     }
 
     pub fn visible_frames(&self) -> f64 {
         self.lane_width as f64 * self.spp
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::View;
+
+    /// A 1000-pixel view of 60 s at 48 kHz.
+    fn view() -> View {
+        View {
+            lane_width: 1000.0,
+            content: 60.0 * 48_000.0,
+            ..View::default()
+        }
+    }
+
+    #[test]
+    fn zooming_out_stops_when_everything_fits() {
+        let mut v = view();
+        for _ in 0..40 {
+            v.zoom(2.0, 500.0);
+        }
+        assert_eq!(v.spp, v.max_spp());
+        assert_eq!(v.scroll, 0.0);
+        // All 60 s are visible, with the end 90% of the way across.
+        assert!((v.visible_frames() * 0.9 - v.content).abs() < 1.0);
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_end_margin() {
+        let mut v = view();
+        v.spp = 512.0;
+        v.scroll = 1e12; // flung far past the end
+        v.clamp();
+        let end_x = (v.content - v.scroll) / v.spp;
+        assert!((end_x - 900.0).abs() < 1e-6, "end at {end_x} px");
+        v.scroll = -5.0;
+        v.clamp();
+        assert_eq!(v.scroll, 0.0);
+    }
+
+    #[test]
+    fn zoom_keeps_the_point_under_the_mouse_where_possible() {
+        let mut v = view();
+        v.spp = 512.0;
+        v.scroll = 100_000.0;
+        let under = v.scroll + 300.0 * v.spp;
+        v.zoom(0.5, 300.0);
+        assert!((v.scroll + 300.0 * v.spp - under).abs() < 1e-6);
+        // Zooming out near the end can't leave the material behind.
+        v.scroll = v.max_scroll();
+        for _ in 0..5 {
+            v.zoom(1.5, 990.0);
+            assert!(v.scroll <= v.max_scroll() && v.scroll >= 0.0);
+        }
+    }
+
+    #[test]
+    fn fit_and_selection_zoom_stay_in_bounds() {
+        let mut v = view();
+        v.show_range(0, 60 * 48_000);
+        assert_eq!(v.scroll, 0.0);
+        assert!(v.spp <= v.max_spp());
+        v.show_range(59 * 48_000, 60 * 48_000);
+        assert!(v.scroll <= v.max_scroll());
     }
 }
 
@@ -898,19 +994,10 @@ impl KerfApp {
                 let end = self.project().length();
                 self.seek(end);
             }
-            ZoomIn => self.view.zoom(0.5, self.view.lane_width / 2.0),
-            ZoomOut => self.view.zoom(2.0, self.view.lane_width / 2.0),
-            ZoomFit => {
-                let len = self
-                    .project()
-                    .length()
-                    .max(self.project().sample_rate as Frame);
-                self.view.show_range(0, len);
-            }
-            ZoomSelection => {
-                if let Some((a, b)) = self.require_range() {
-                    self.view.show_range(a, b);
-                }
+            ZoomIn | ZoomOut | ZoomFit | ZoomSelection => {
+                // The project may have just changed (opened, imported).
+                self.update_view_content();
+                self.zoom_action(action);
             }
             ToggleLoop => self.loop_playback = !self.loop_playback,
             ToggleSnap => self.view.snap = !self.view.snap,
@@ -1019,6 +1106,40 @@ impl KerfApp {
     }
 
     /// Scroll so `frame` is on screen (if it isn't already).
+    fn zoom_action(&mut self, action: Action) {
+        match action {
+            Action::ZoomIn => self.view.zoom(0.5, self.view.lane_width / 2.0),
+            Action::ZoomOut => self.view.zoom(2.0, self.view.lane_width / 2.0),
+            Action::ZoomFit => {
+                let len = self
+                    .project()
+                    .length()
+                    .max(self.project().sample_rate as Frame);
+                self.view.show_range(0, len);
+            }
+            Action::ZoomSelection => {
+                if let Some((a, b)) = self.require_range() {
+                    self.view.show_range(a, b);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Tell the view how long the material is, so zoom and scroll stay
+    /// within it (at least a second, and including where a clip is being
+    /// dragged or trimmed to).
+    pub fn update_view_content(&mut self) {
+        use crate::timeline::Drag;
+        let p = self.doc.project();
+        let dragged_end = match &self.drag {
+            Some(Drag::MoveClip { clip, pos, .. }) => p.clip(*clip).map_or(0, |c| pos + c.length),
+            Some(Drag::TrimEnd { pos, .. }) => *pos,
+            _ => 0,
+        };
+        self.view.content = (p.length().max(dragged_end) as f64).max(p.sample_rate as f64);
+    }
+
     pub fn ensure_visible(&mut self, frame: Frame) {
         let visible = self.view.visible_frames();
         let f = frame as f64;

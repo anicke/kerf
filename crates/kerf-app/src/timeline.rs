@@ -277,6 +277,7 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
     app.view.lane_width = lanes.width().max(1.0);
     app.view.lane_height = lanes.height().max(1.0);
     let n_tracks = app.project().tracks.len();
+    app.update_view_content();
 
     // --- Scroll / zoom input --------------------------------------------------
     let (scroll_delta, zoom, hover, mods) = ui.input(|i| {
@@ -295,10 +296,11 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
             let factor = if scroll_delta.y > 0.0 { 1.25 } else { 0.8 };
             app.view.vzoom = (app.view.vzoom * factor).clamp(1.0, 256.0);
         } else {
-            app.view.scroll = (app.view.scroll - scroll_delta.x as f64 * app.view.spp).max(0.0);
+            app.view.scroll -= scroll_delta.x as f64 * app.view.spp;
             app.view.vscroll -= scroll_delta.y;
         }
     }
+    app.view.clamp();
     let tops = app.view.track_tops(app.project());
     let max_v = (tops[n_tracks] - lanes.height()).max(0.0);
     app.view.vscroll = app.view.vscroll.clamp(0.0, max_v);
@@ -980,11 +982,10 @@ fn ruler_interaction(
     });
 }
 
-fn scroll_total(app: &KerfApp, p: &Project) -> f64 {
-    let visible = app.view.visible_frames();
-    (p.length() as f64 + visible * 0.5)
-        .max(app.view.scroll + visible)
-        .max(1.0)
+fn scroll_total(app: &KerfApp, _p: &Project) -> f64 {
+    app.view
+        .scroll_extent()
+        .max(app.view.scroll + app.view.visible_frames())
 }
 
 fn scrollbar_interaction(
