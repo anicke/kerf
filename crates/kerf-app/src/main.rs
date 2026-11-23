@@ -11,6 +11,7 @@ mod nav;
 mod prefs;
 mod recovery;
 mod timeline;
+mod transport;
 
 fn main() -> eframe::Result {
     let files: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();

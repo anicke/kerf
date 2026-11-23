@@ -1913,23 +1913,43 @@ impl KerfApp {
         let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+            // Items are centred on the row height known when they are added,
+            // so make the row as tall as its tallest item (the position
+            // field, measured last frame) up front, and the buttons too.
+            let field_h = ui
+                .ctx()
+                .data(|d| d.get_temp::<f32>(time_field_height_id("pos")))
+                .unwrap_or_else(|| {
+                    ui.fonts_mut(|f| f.row_height(&egui::FontId::monospace(20.0))) + 10.0
+                });
+            ui.set_min_height(field_h.max(crate::transport::MIN_HEIGHT));
             let playing = self.player.is_playing();
-            if ui.button("⏮").on_hover_text("Go to start (Home)").clicked() {
+            use crate::transport::{button, Icon};
+            if button(ui, Icon::GoStart, false, field_h)
+                .on_hover_text("Go to start (Home)")
+                .clicked()
+            {
                 self.perform(&ctx, Action::GoStart);
             }
-            let play = if playing { "⏹" } else { "▶" };
-            if ui
-                .button(play)
+            let icon = if playing { Icon::Stop } else { Icon::Play };
+            if button(ui, icon, false, field_h)
                 .on_hover_text("Play / Stop (Space)")
                 .clicked()
             {
                 self.perform(&ctx, Action::PlayStop);
             }
-            if ui.button("⏭").on_hover_text("Go to end (End)").clicked() {
+            if button(ui, Icon::GoEnd, false, field_h)
+                .on_hover_text("Go to end (End)")
+                .clicked()
+            {
                 self.perform(&ctx, Action::GoEnd);
             }
-            ui.toggle_value(&mut self.loop_playback, "🔁")
-                .on_hover_text("Loop playback (L)");
+            if button(ui, Icon::Loop, self.loop_playback, field_h)
+                .on_hover_text("Loop playback (L)")
+                .clicked()
+            {
+                self.loop_playback = !self.loop_playback;
+            }
             ui.separator();
 
             let sr = self.project().sample_rate;
@@ -2751,6 +2771,10 @@ impl KerfApp {
                     self.view.db_scale = true;
                     None
                 }
+                Ok("loop") => {
+                    self.loop_playback = true;
+                    None
+                }
                 Ok("recover") => {
                     if let Some(Dialog::Recover(orphans)) = &mut self.dialog {
                         let o = orphans.remove(0);
@@ -3016,6 +3040,11 @@ fn export_settings_ui(
     }
 }
 
+/// Where [`time_field`] records its height, for aligning neighbours.
+fn time_field_height_id(name: &str) -> egui::Id {
+    egui::Id::unique(("time-field-height", name))
+}
+
 /// An editable time display. Shows `value` (or "–") formatted; click to type,
 /// Enter applies, Escape or clicking away cancels. Returns the typed time
 /// when committed, and whether the time format was changed (right-click menu).
@@ -3052,6 +3081,9 @@ fn time_field(
         .on_hover_text(
             "Click to type a time (Enter applies). Right-click to change the time format.",
         );
+    let h = r.rect.height();
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(time_field_height_id(name), h));
     if r.gained_focus() && !is_editing {
         *editing = Some((id, shown));
     } else if r.changed() {
