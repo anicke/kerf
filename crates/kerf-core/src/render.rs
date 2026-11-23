@@ -184,8 +184,12 @@ pub fn for_each_chunk(
     opts: &RenderOptions,
     mut f: impl FnMut(&[Vec<f32>], usize) -> Result<bool>,
 ) -> Result<()> {
+    // Long reads (exports, analysis) release mapped audio as they go, so a
+    // pass over an hour of audio doesn't leave it all counted in memory.
+    const RELEASE_EVERY_CHUNKS: usize = 64;
     let mut chunk = vec![vec![0.0f32; CHUNK]; project.channels as usize];
     let mut pos = start;
+    let mut chunks = 0usize;
     while pos < end {
         let n = CHUNK.min((end - pos) as usize);
         mix_into(project, pos, n, &mut chunk, opts);
@@ -193,6 +197,10 @@ pub fn for_each_chunk(
             return Err(Error::Cancelled);
         }
         pos += n as Frame;
+        chunks += 1;
+        if chunks.is_multiple_of(RELEASE_EVERY_CHUNKS) {
+            crate::store::release_mapped_memory();
+        }
     }
     Ok(())
 }

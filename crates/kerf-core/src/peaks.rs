@@ -10,11 +10,12 @@ use crate::buffer::AudioBuffer;
 use crate::error::Result;
 use crate::store::Samples;
 
-/// Frames per entry in the finest level.
-const BASE_BLOCK: usize = 32;
+/// Frames per entry in the finest level. (64 keeps the cache at 1/32 of the
+/// audio; drawing finer than that reads the visible samples directly.)
+const BASE_BLOCK: usize = 64;
 /// Each coarser level summarises this many entries of the previous one.
 const FACTOR: usize = 4;
-const MAGIC: &[u8; 8] = b"KERFPK01";
+const MAGIC: &[u8; 8] = b"KERFPK02";
 
 const EMPTY: [f32; 2] = [f32::INFINITY, f32::NEG_INFINITY];
 
@@ -24,7 +25,7 @@ struct Level {
     channels: Vec<Vec<[f32; 2]>>,
 }
 
-/// Precomputed min/max pyramid (about 1/16 the size of the audio).
+/// Precomputed min/max pyramid (about 1/24 the size of the audio, all levels).
 pub struct PeakCache {
     levels: Vec<Level>,
 }
@@ -109,9 +110,35 @@ impl PeakCache {
         b.finish()
     }
 
-    /// Exact min and max sample of `channel` over frames `start..end`,
-    /// in O(levels × FACTOR + BASE_BLOCK) time. Returns `(0, 0)` for empty ranges.
+    /// Min and max sample of `channel` over frames `start..end`, for drawing
+    /// and overviews. A range of at least two base blocks is widened to whole
+    /// base blocks, so only the precomputed peaks are read, never the audio
+    /// (except a partial block at the very end); the result may include up to
+    /// one block of neighbouring samples on each side, which never hides a
+    /// peak. Shorter ranges are exact. Returns `(0, 0)` for empty ranges.
+    ///
+    /// (Reading a few raw samples per column across a whole file would make
+    /// the OS map the whole file into memory again on every repaint.)
     pub fn min_max(
+        &self,
+        audio: &(impl Samples + ?Sized),
+        channel: usize,
+        start: usize,
+        end: usize,
+    ) -> (f32, f32) {
+        let block = self.levels[0].block;
+        let end = end.min(audio.frames());
+        if end.saturating_sub(start) < 2 * block {
+            return self.min_max_exact(audio, channel, start, end);
+        }
+        let start = start / block * block;
+        let end = (end.div_ceil(block) * block).min(audio.frames());
+        self.min_max_exact(audio, channel, start, end)
+    }
+
+    /// Exact min and max over `start..end`, in O(levels × FACTOR + BASE_BLOCK)
+    /// time; reads raw samples at the range edges.
+    pub fn min_max_exact(
         &self,
         audio: &(impl Samples + ?Sized),
         channel: usize,
@@ -258,7 +285,7 @@ mod tests {
             (99_999, 100_000),
             (4095, 4097),
         ] {
-            let (lo, hi) = cache.min_max(&buf, 0, s, e);
+            let (lo, hi) = cache.min_max_exact(&buf, 0, s, e);
             let blo = data[s..e].iter().cloned().fold(f32::INFINITY, f32::min);
             let bhi = data[s..e].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             assert_eq!((lo, hi), (blo, bhi), "{s}..{e}");
@@ -292,10 +319,60 @@ mod tests {
         );
         for (s, e) in [(0, n), (100, 20_000), (40_000, 54_321)] {
             for ch in 0..2 {
-                let want = whole.min_max(&buf, ch, s, e);
-                assert_eq!(streamed.min_max(&buf, ch, s, e), want);
-                assert_eq!(loaded.min_max(&buf, ch, s, e), want);
+                let want = whole.min_max_exact(&buf, ch, s, e);
+                assert_eq!(streamed.min_max_exact(&buf, ch, s, e), want);
+                assert_eq!(loaded.min_max_exact(&buf, ch, s, e), want);
             }
         }
+    }
+
+    /// Audio that counts how often its samples are read.
+    struct Counting {
+        buf: AudioBuffer,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl Samples for Counting {
+        fn sample_rate(&self) -> u32 {
+            self.buf.sample_rate()
+        }
+        fn num_channels(&self) -> usize {
+            self.buf.num_channels()
+        }
+        fn frames(&self) -> usize {
+            self.buf.frames()
+        }
+        fn channel(&self, i: usize) -> &[f32] {
+            self.reads.set(self.reads.get() + 1);
+            self.buf.channel(i)
+        }
+    }
+
+    #[test]
+    fn wide_queries_never_read_the_audio() {
+        let audio = Counting {
+            // Not a whole number of blocks.
+            buf: AudioBuffer::new(48_000, vec![signal(1_000_003)]),
+            reads: Default::default(),
+        };
+        let peaks = PeakCache::build_from(&audio.buf);
+        let narrowest = 2 * BASE_BLOCK; // the smallest range that stays coarse
+        for (a, b) in [
+            (17, 50_017),
+            (123_457, 654_321),
+            (999, 2_000),
+            (5, 5 + narrowest),
+        ] {
+            audio.reads.set(0);
+            let (lo, hi) = peaks.min_max(&audio, 0, a, b);
+            assert_eq!(audio.reads.get(), 0, "{a}..{b} read the audio");
+            // Never narrower than the exact answer.
+            let exact = peaks.min_max_exact(&audio.buf, 0, a, b);
+            assert!(lo <= exact.0 && hi >= exact.1);
+        }
+        // Zoomed in (under two blocks): exact, from the audio.
+        let (a, b) = (100, 100 + narrowest - 1);
+        let r = peaks.min_max(&audio, 0, a, b);
+        assert_eq!(r, peaks.min_max_exact(&audio.buf, 0, a, b));
     }
 }

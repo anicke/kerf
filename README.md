@@ -61,7 +61,9 @@ MCP server so AI assistants can edit alongside you.
   resampler when their rate differs from the project's.
 - **Small memory footprint.** Imported audio is decoded once into a disk cache and memory-mapped,
   so RAM use doesn't grow with the length of your material: a 20-minute stereo 32-bit float file
-  adds about 50 MB (waveform overview data), against about 490 MB when held in memory. Reopening
+  adds about 20 MB (waveform overview data), against about 490 MB when held in memory. Pages of
+  audio that playback, export or analysis have read are handed back to the system as they go, so
+  even playing through a 42-minute recording keeps Kerf at about 250 MB in total. Reopening
   a project maps the cache directly, with no decoding. Playback renders about 0.25 s ahead on its
   own thread, so disk reads never reach the real-time audio thread, and stop, seek and edits still
   take effect at once.

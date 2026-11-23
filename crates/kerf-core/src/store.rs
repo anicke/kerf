@@ -3,6 +3,8 @@
 
 use std::fs::File;
 use std::path::Path;
+use std::sync::{Arc, Mutex, Once, Weak};
+use std::time::Duration;
 
 use memmap2::Mmap;
 
@@ -47,7 +49,7 @@ enum Backing {
     Memory(Vec<Vec<f32>>),
     /// One read-only mapping per channel. Cache files are never modified after
     /// they are written, which is what makes reading them as slices sound.
-    Mapped(Vec<Mmap>),
+    Mapped(Vec<Arc<Mmap>>),
 }
 
 /// The immutable audio of a [`Source`](crate::Source).
@@ -88,7 +90,8 @@ impl SourceAudio {
             }
             // SAFETY: cache files are written once, renamed into place and never
             // modified afterwards; Kerf only ever maps them read-only.
-            let map = unsafe { Mmap::map(&file)? };
+            let map = Arc::new(unsafe { Mmap::map(&file)? });
+            register(&map);
             maps.push(map);
         }
         Ok(Self {
@@ -153,22 +156,109 @@ impl Samples for SourceAudio {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Keeping mapped audio out of the process's memory
+// ---------------------------------------------------------------------------
+//
+// Pages of a mapping stay counted in the process's memory once read, so
+// playing or exporting an hour of audio would make Kerf appear to use the
+// whole file's size in RAM (the OS can reclaim them, but it shows, and it
+// crowds out other caching). Every mapping is registered here and released
+// regularly: a background thread does so every second, and long sequential
+// reads (`render::for_each_chunk`) do so as they go, since they can read far
+// more than a second's worth. (The cache's `Lease` registry tracks which
+// entries are in use; this one holds the mappings themselves.)
+
+static MAPPED: Mutex<Vec<Weak<Mmap>>> = Mutex::new(Vec::new());
+
+/// How often the background thread releases mapped pages.
+const RELEASE_EVERY: Duration = Duration::from_secs(1);
+
+fn register(map: &Arc<Mmap>) {
+    MAPPED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(Arc::downgrade(map));
+    static TRIMMER: Once = Once::new();
+    TRIMMER.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("kerf-release-pages".into())
+            .spawn(|| loop {
+                std::thread::sleep(RELEASE_EVERY);
+                release_mapped_memory();
+            });
+    });
+}
+
+/// Drop every mapped audio page from this process's memory. Later reads
+/// fetch them again (usually from the OS file cache).
+pub fn release_mapped_memory() {
+    // One pass: forget dropped mappings, release live ones. Holding the lock
+    // meanwhile is fine: releasing is fast, and only `register` waits on it.
+    MAPPED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|w| match w.upgrade() {
+            Some(map) => {
+                release(&map);
+                true
+            }
+            None => false,
+        });
+}
+
+#[cfg(unix)]
+fn release(map: &Mmap) {
+    use memmap2::UncheckedAdvice;
+    // SAFETY: the mapping is read-only and shared (`Mmap::map`) over a cache
+    // file that is never modified after it is written. MADV_DONTNEED only
+    // removes the pages from this process; the next access faults them back
+    // in from the file with identical contents, so slices borrowed from the
+    // mapping never observe a change.
+    let _ = unsafe { map.unchecked_advise(UncheckedAdvice::DontNeed) };
+}
+
+#[cfg(windows)]
+fn release(map: &Mmap) {
+    unsafe extern "system" {
+        fn VirtualUnlock(address: *const std::ffi::c_void, size: usize) -> i32;
+    }
+    // Unlocking pages that aren't locked removes them from the working set
+    // (documented behaviour); they are paged back in from the file on access.
+    // SAFETY: the range is exactly this live mapping.
+    unsafe {
+        VirtualUnlock(map.as_ptr().cast(), map.len());
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn release(_map: &Mmap) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
 
+    /// Write each channel to its own raw f32 file in `dir`; returns the paths.
+    fn write_channels(dir: &Path, data: &[Vec<f32>]) -> Vec<std::path::PathBuf> {
+        data.iter()
+            .enumerate()
+            .map(|(c, d)| {
+                let p = dir.join(format!("c{c}"));
+                File::create(&p)
+                    .unwrap()
+                    .write_all(bytemuck::cast_slice(d))
+                    .unwrap();
+                p
+            })
+            .collect()
+    }
+
     #[test]
     fn mapped_matches_memory() {
         let dir = tempfile::tempdir().unwrap();
         let data = [vec![0.5f32, -1.0, 2.0], vec![1e-7, 0.0, -0.25]];
-        let paths: Vec<_> = (0..2).map(|c| dir.path().join(format!("c{c}"))).collect();
-        for (p, d) in paths.iter().zip(&data) {
-            File::create(p)
-                .unwrap()
-                .write_all(bytemuck::cast_slice(d))
-                .unwrap();
-        }
+        let paths = write_channels(dir.path(), &data);
         let mapped = SourceAudio::map_files(48_000, 3, &paths, None).unwrap();
         assert!(mapped.is_mapped());
         assert_eq!(mapped.resident_bytes(), 0);
@@ -180,5 +270,16 @@ mod tests {
             SourceAudio::map_files(48_000, 4, &paths, None).is_err(),
             "size mismatch rejected"
         );
+    }
+
+    #[test]
+    fn released_pages_read_back_identically() {
+        let dir = tempfile::tempdir().unwrap();
+        let data: Vec<f32> = (0..300_000).map(|i| (i as f32 * 0.001).sin()).collect();
+        let paths = write_channels(dir.path(), std::slice::from_ref(&data));
+        let mapped = SourceAudio::map_files(48_000, data.len(), &paths, None).unwrap();
+        assert_eq!(mapped.channel(0), &data[..]);
+        release_mapped_memory();
+        assert_eq!(mapped.channel(0), &data[..]);
     }
 }
