@@ -211,7 +211,7 @@ for trying song-start detection.
 | N | Toggle snap | Ctrl+E / Ctrl+Shift+E | Export mix / split at markers |
 | Ctrl+↑ / ↓ | Vertical zoom | D | Waveform in dB |
 | Shift+Z | Selection to zero crossings | Double-click | Select clip, or song between markers |
-| Alt+↑ / ↓ | Taller / shorter tracks (selected, or all) | | |
+| Alt+↑ / ↓ | Taller / shorter tracks (selected, or all) | Ctrl+Shift+O | Open a recent project |
 
 Space and Shift+Space can be swapped in Preferences.
 

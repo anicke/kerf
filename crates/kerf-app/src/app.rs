@@ -267,6 +267,7 @@ pub enum Dialog {
     Preferences(Box<PrefsDraft>),
     Album(Box<crate::album_ui::AlbumState>),
     Recover(Vec<crate::recovery::Orphan>),
+    Recent(crate::recent::QuickOpen),
     About,
 }
 
@@ -300,6 +301,7 @@ pub enum Pending {
 pub enum Action {
     New,
     Open,
+    OpenRecent,
     Import,
     Save,
     SaveAs,
@@ -567,6 +569,7 @@ impl KerfApp {
         match action {
             New => self.guard_discard(ctx, Pending::New),
             Open => self.guard_discard(ctx, Pending::Open(None)),
+            OpenRecent => self.dialog = Some(Dialog::Recent(Default::default())),
             Import => {
                 let mut dlg = rfd::FileDialog::new()
                     .add_filter("Audio", kerf_core::io::IMPORT_EXTENSIONS)
@@ -1359,6 +1362,16 @@ impl KerfApp {
         }));
     }
 
+    pub fn remember_recent(&mut self, path: &Path) {
+        crate::recent::remember(&mut self.prefs.recent_projects, path);
+        let _ = self.prefs.save();
+    }
+
+    fn clear_recent(&mut self) {
+        self.prefs.recent_projects.clear();
+        let _ = self.prefs.save();
+    }
+
     /// Returns `true` if saved.
     fn save(&mut self, save_as: bool) -> bool {
         let path = match (&self.doc.path, save_as) {
@@ -1383,6 +1396,7 @@ impl KerfApp {
         };
         match session::save(self.project(), &path) {
             Ok(()) => {
+                self.remember_recent(&path);
                 self.doc.path = Some(path.clone());
                 self.doc.mark_saved();
                 self.info(format!("Saved {}", path.display()));
@@ -1565,6 +1579,7 @@ impl KerfApp {
             },
             JobDone::Loaded(path, r) => match r {
                 Ok(project) => {
+                    self.remember_recent(&path);
                     self.player.stop();
                     self.doc = Document::new(project);
                     self.doc.path = Some(path.clone());
@@ -1610,6 +1625,7 @@ impl KerfApp {
             (cmd_shift, Key::ArrowRight, Action::ExtendNextEditPoint),
             (cmd_shift, Key::M, Action::ToggleMarkersPanel),
             (cmd_shift, Key::A, Action::Album),
+            (cmd_shift, Key::O, Action::OpenRecent),
             (cmd, Key::ArrowLeft, Action::PrevEditPoint),
             (cmd, Key::ArrowRight, Action::NextEditPoint),
             (cmd, Key::Comma, Action::Preferences),
@@ -1709,6 +1725,8 @@ impl KerfApp {
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         let mut act = None;
+        let mut pending_open: Option<PathBuf> = None;
+        let mut clear_recent = false;
         let item = |ui: &mut egui::Ui,
                     label: &str,
                     shortcut: &str,
@@ -1724,6 +1742,28 @@ impl KerfApp {
             ui.menu_button("File", |ui| {
                 item(ui, "New", "Ctrl+N", Action::New, &mut act);
                 item(ui, "Open Project…", "Ctrl+O", Action::Open, &mut act);
+                ui.menu_button("Open Recent", |ui| {
+                    let recent = self.prefs.recent_projects.clone();
+                    if recent.is_empty() {
+                        ui.label(egui::RichText::new("No recent projects").weak());
+                    }
+                    for path in recent {
+                        let label = crate::recent::name(&path);
+                        let resp = ui
+                            .add_enabled(path.exists(), egui::Button::new(label))
+                            .on_hover_text(path.display().to_string());
+                        if resp.clicked() {
+                            pending_open = Some(path);
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    item(ui, "More…", "Ctrl+Shift+O", Action::OpenRecent, &mut act);
+                    if ui.button("Clear Recent").clicked() {
+                        clear_recent = true;
+                        ui.close();
+                    }
+                });
                 item(ui, "Import Audio…", "Ctrl+I", Action::Import, &mut act);
                 ui.separator();
                 item(ui, "Save Project", "Ctrl+S", Action::Save, &mut act);
@@ -2058,6 +2098,12 @@ impl KerfApp {
         });
         if let Some(a) = act {
             self.perform(&ctx, a);
+        }
+        if let Some(path) = pending_open {
+            self.guard_discard(&ctx, Pending::Open(Some(path)));
+        }
+        if clear_recent {
+            self.clear_recent();
         }
     }
 
@@ -2477,6 +2523,7 @@ impl KerfApp {
             Dialog::Preferences(_) => "Preferences",
             Dialog::Album(_) => "Album",
             Dialog::Recover(_) => "Recover Unsaved Work",
+            Dialog::Recent(_) => "Recent Projects",
             Dialog::About => "About Kerf",
         };
         let scope = match self.sel.range.filter(|(a, b)| b > a) {
@@ -2854,6 +2901,23 @@ impl KerfApp {
                         }
                     }
                 }
+                Dialog::Recent(q) => {
+                    use crate::recent::Outcome;
+                    match q.ui(ui, &self.prefs.recent_projects) {
+                        Outcome::None => {}
+                        Outcome::Close => close = true,
+                        Outcome::Open(path) => {
+                            run = Some(Box::new(move |app, ctx| {
+                                app.guard_discard(ctx, Pending::Open(Some(path)))
+                            }));
+                            close = true;
+                        }
+                        Outcome::Clear => {
+                            run = Some(Box::new(|app, _| app.clear_recent()));
+                            close = true;
+                        }
+                    }
+                }
                 Dialog::About => {
                     ui.heading("Kerf");
                     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
@@ -3091,6 +3155,7 @@ impl KerfApp {
                 Ok("detect") => Some(Action::DetectSongs),
                 Ok("split") => Some(Action::Export(ExportKind::Markers)),
                 Ok("prefs") => Some(Action::Preferences),
+                Ok("recent") => Some(Action::OpenRecent),
                 Ok("album") => Some(Action::Album),
                 Ok("split-flac") => {
                     self.export_settings = ExportSettings::FLAC_ALBUM;
@@ -3853,6 +3918,7 @@ Ctrl+⇧M      markers panel        Ctrl+,       preferences
 Ctrl+↑ / ↓   vertical zoom        D            waveform in dB
 Shift+Z      selection to zero crossings
 Ctrl+E       export mix           Ctrl+⇧E      export split at markers
+Ctrl+O       open project         Ctrl+⇧O      open a recent project
 
 Mouse: drag in a track to select · drag a clip's title bar to move it ·
 drag clip edges to trim · drag the squares at a clip's top corners for fades ·

@@ -167,7 +167,13 @@ impl KerfApp {
                     let r = run_direct(&mut self.doc, self.cache.clone(), request);
                     self.validate_selection();
                     if let Ok(resp) = &r {
-                        if self.doc.revision() != before || resp.summary.starts_with("Saved") {
+                        let saved = resp.summary.starts_with("Saved");
+                        if saved {
+                            if let Some(p) = self.doc.path.clone() {
+                                self.remember_recent(&p);
+                            }
+                        }
+                        if self.doc.revision() != before || saved {
                             self.info(format!("AI: {}", resp.summary));
                         }
                     }

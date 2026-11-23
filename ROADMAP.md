@@ -157,7 +157,7 @@ From the comparison with established editors:
 - Scrubbing (drag the playhead to hear) and J/K/L shuttle.
 - Undo history panel (click to jump back several steps).
 - Statistics and loudness panel: selection peak, true peak, RMS, LUFS, plus a live loudness meter.
-- Recent files.
+- ~~Recent files~~ (done: *File → Open Recent* and Ctrl+Shift+O).
 - Customisable shortcuts.
 
 Size: about 3–4 days in total.

@@ -44,6 +44,8 @@ pub struct Prefs {
     /// Folders an assistant may read and write (empty: the home folder).
     pub assistant_folders: Vec<PathBuf>,
     pub follow: FollowMode,
+    /// Recently opened or saved projects, most recent first.
+    pub recent_projects: Vec<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -62,6 +64,7 @@ impl Default for Prefs {
             assistant_enabled: false,
             assistant_folders: Vec::new(),
             follow: FollowMode::Page,
+            recent_projects: Vec::new(),
         }
     }
 }

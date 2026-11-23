@@ -10,6 +10,7 @@ mod jobs;
 mod markers_panel;
 mod nav;
 mod prefs;
+mod recent;
 mod recovery;
 mod timeline;
 
