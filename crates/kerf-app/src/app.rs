@@ -180,6 +180,10 @@ pub enum Dialog {
 pub struct PrefsDraft {
     prefs: crate::prefs::Prefs,
     devices: Vec<(String, String)>,
+    /// Text of the custom FFmpeg path field.
+    ffmpeg_path: String,
+    /// What the FFmpeg setting finds, refreshed when it changes.
+    ffmpeg_status: Option<(kerf_core::decode::FfmpegSetting, String)>,
 }
 
 /// Snapshot shown in the Audio Cache dialog.
@@ -363,6 +367,7 @@ impl KerfApp {
         };
         app.player
             .configure(app.prefs.output_device.clone(), app.prefs.buffer_frames);
+        kerf_core::decode::configure(&app.prefs.ffmpeg);
         app.recovery = crate::recovery::Recovery::new(app.prefs.autosave_secs);
         let orphans = app
             .recovery
@@ -857,9 +862,15 @@ impl KerfApp {
             ToggleDbScale => self.view.db_scale = !self.view.db_scale,
             Album => self.dialog = Some(Dialog::Album(Box::default())),
             Preferences => {
+                let ffmpeg_path = match &self.prefs.ffmpeg {
+                    kerf_core::decode::FfmpegSetting::Path(p) => p.display().to_string(),
+                    _ => String::new(),
+                };
                 self.dialog = Some(Dialog::Preferences(Box::new(PrefsDraft {
                     prefs: self.prefs.clone(),
                     devices: crate::audio::output_devices(),
+                    ffmpeg_path,
+                    ffmpeg_status: None,
                 })));
             }
             GoStart => self.seek(0),
@@ -1006,6 +1017,7 @@ impl KerfApp {
     }
 
     fn apply_prefs(&mut self, new: crate::prefs::Prefs) {
+        kerf_core::decode::configure(&new.ffmpeg);
         self.player
             .configure(new.output_device.clone(), new.buffer_frames);
         if let Some(r) = &mut self.recovery {
@@ -3118,6 +3130,10 @@ fn prefs_ui(ui: &mut egui::Ui, draft: &mut PrefsDraft, fallback_note: Option<&st
     });
 
     ui.separator();
+    ffmpeg_ui(ui, draft);
+
+    let p = &mut draft.prefs;
+    ui.separator();
     ui.heading("Recovery");
     ui.horizontal(|ui| {
         ui.label("Save recovery snapshots of unsaved work");
@@ -3134,6 +3150,97 @@ fn prefs_ui(ui: &mut egui::Ui, draft: &mut PrefsDraft, fallback_note: Option<&st
                 }
             });
     });
+}
+
+/// Preferences: which FFmpeg decodes what the built-in decoder can't.
+fn ffmpeg_ui(ui: &mut egui::Ui, draft: &mut PrefsDraft) {
+    use kerf_core::decode::FfmpegSetting;
+    ui.heading("Decoding");
+    ui.label(
+        egui::RichText::new(
+            "Kerf decodes WAV, FLAC, MP3, Ogg Vorbis, AAC, ALAC and AIFF itself. FFmpeg, if \
+             installed, adds HE-AAC at full quality (common for radio recordings), AC-3, WMA, \
+             APE, WavPack and more.",
+        )
+        .weak()
+        .small(),
+    );
+    let p = &mut draft.prefs;
+    let custom = matches!(p.ffmpeg, FfmpegSetting::Path(_));
+    ui.horizontal(|ui| {
+        if ui
+            .radio(p.ffmpeg == FfmpegSetting::Auto, "Find FFmpeg automatically")
+            .clicked()
+        {
+            p.ffmpeg = FfmpegSetting::Auto;
+        }
+        if ui.radio(custom, "Use this ffmpeg:").clicked() && !custom {
+            p.ffmpeg = FfmpegSetting::Path(draft.ffmpeg_path.clone().into());
+        }
+        if ui.radio(p.ffmpeg == FfmpegSetting::Off, "Off").clicked() {
+            p.ffmpeg = FfmpegSetting::Off;
+        }
+    });
+    if custom {
+        ui.horizontal(|ui| {
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut draft.ffmpeg_path)
+                    .desired_width(320.0)
+                    .hint_text("/path/to/ffmpeg"),
+            );
+            if ui.button("Browse…").clicked() {
+                if let Some(f) = rfd::FileDialog::new()
+                    .set_title("Choose ffmpeg")
+                    .pick_file()
+                {
+                    draft.ffmpeg_path = f.display().to_string();
+                }
+            }
+            if r.changed() || draft.ffmpeg_path != p_path(&p.ffmpeg) {
+                p.ffmpeg = FfmpegSetting::Path(draft.ffmpeg_path.trim().into());
+            }
+        });
+    }
+    let env = FfmpegSetting::from_env();
+    let effective = env.clone().unwrap_or_else(|| p.ffmpeg.clone());
+    if draft.ffmpeg_status.as_ref().map(|(s, _)| s) != Some(&effective) {
+        let text = match effective.locate() {
+            Some(f) => format!(
+                "Using {} ({})",
+                f.ffmpeg.display(),
+                f.version().unwrap_or_else(|| "version unknown".into())
+            ),
+            None if effective == FfmpegSetting::Off => {
+                "Off: HE-AAC imports without its upper frequencies; formats only FFmpeg reads \
+                 can't be imported."
+                    .into()
+            }
+            None => "FFmpeg not found (ffmpeg and ffprobe are both needed).".into(),
+        };
+        draft.ffmpeg_status = Some((effective.clone(), text));
+    }
+    if let Some((_, text)) = &draft.ffmpeg_status {
+        let found = text.starts_with("Using");
+        let color = if found {
+            ui.visuals().weak_text_color()
+        } else {
+            ui.visuals().warn_fg_color
+        };
+        ui.colored_label(color, text);
+    }
+    if env.is_some() {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "The KERF_FFMPEG environment variable overrides this setting.",
+        );
+    }
+}
+
+fn p_path(s: &kerf_core::decode::FfmpegSetting) -> String {
+    match s {
+        kerf_core::decode::FfmpegSetting::Path(p) => p.display().to_string(),
+        _ => String::new(),
+    }
 }
 
 /// "5 minutes ago" style description.

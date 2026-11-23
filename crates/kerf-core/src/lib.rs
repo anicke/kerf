@@ -21,6 +21,7 @@ pub mod album;
 pub mod analysis;
 pub mod buffer;
 pub mod cache;
+pub mod decode;
 pub mod detect;
 pub mod document;
 pub mod edit;

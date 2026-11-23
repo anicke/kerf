@@ -19,7 +19,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::io::StreamDecoder;
 use crate::peaks::{PeakBuilder, PeakCache};
 use crate::resample::StreamResampler;
 use crate::store::SourceAudio;
@@ -207,9 +206,9 @@ impl AudioCache {
         target_rate: Option<u32>,
         progress: Progress,
     ) -> Result<(SourceAudio, PeakCache)> {
-        let mut dec = StreamDecoder::open(path)?;
+        let mut dec = crate::decode::open(path)?;
         let rate = target_rate.unwrap_or(dec.sample_rate());
-        let key = file_key(path, rate)?;
+        let key = file_key(path, rate, dec.backend())?;
         if let Some(hit) = self.load(&key) {
             return Ok(hit);
         }
@@ -440,7 +439,7 @@ impl Fnv {
     }
 }
 
-fn file_key(path: &Path, rate: u32) -> Result<String> {
+fn file_key(path: &Path, rate: u32, backend: &str) -> Result<String> {
     let canonical = fs::canonicalize(path)?;
     let meta = fs::metadata(&canonical)?;
     let mtime = meta
@@ -455,6 +454,9 @@ fn file_key(path: &Path, rate: u32) -> Result<String> {
     h.write(&rate.to_le_bytes());
     h.write(&CACHE_VERSION.to_le_bytes());
     h.write(&DECODER_VERSION.to_le_bytes());
+    // A file decodes differently with another backend (FFmpeg decodes
+    // HE-AAC's upper band; the built-in decoder doesn't).
+    h.write(backend.as_bytes());
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())

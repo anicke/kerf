@@ -1,239 +1,22 @@
-//! Decoding audio files and writing WAV.
+//! Writing WAV; decoding lives in [`crate::decode`] (re-exported here).
+
+pub use crate::decode::{decode_file, decode_limitation};
 
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
-use symphonia::core::errors::Error as SymError;
-use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
 
-use crate::buffer::AudioBuffer;
 use crate::error::{Error, Result};
 use crate::store::Samples;
 
-/// File extensions offered in import dialogs.
+/// File extensions offered in import dialogs. Those the built-in decoder
+/// can't read (AC-3, WMA, APE, WavPack…) need FFmpeg (see [`crate::decode`]).
 pub const IMPORT_EXTENSIONS: &[&str] = &[
     "wav", "wave", "flac", "mp3", "ogg", "oga", "opus", "m4a", "mp4", "aac", "aif", "aiff", "caf",
-    "mka", "webm",
+    "mka", "webm", "ac3", "eac3", "wma", "ape", "wv", "dts", "amr", "m4b", "mov", "mkv",
 ];
-
-/// Decodes a file packet by packet into planar f32 chunks, so arbitrarily
-/// long files can be processed in constant memory.
-pub struct StreamDecoder {
-    path: PathBuf,
-    format: Box<dyn FormatReader>,
-    decoder: Box<dyn AudioDecoder>,
-    track_id: u32,
-    /// The rate of the decoded samples (which may differ from the header's).
-    sample_rate: u32,
-    /// The rate the container states.
-    header_rate: Option<u32>,
-    channels: usize,
-    /// Length in frames at the container's rate.
-    header_frames: Option<u64>,
-    interleaved: Vec<f32>,
-    planar: Vec<Vec<f32>>,
-    /// First chunk, decoded during `open` to learn the stream format.
-    pending: bool,
-    done: bool,
-}
-
-impl StreamDecoder {
-    pub fn open(path: &Path) -> Result<Self> {
-        let derr = |message: String| Error::Decode {
-            path: path.to_path_buf(),
-            message,
-        };
-        let file = File::open(path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-        let format = symphonia::default::get_probe()
-            .probe(
-                &hint,
-                mss,
-                FormatOptions::default(),
-                MetadataOptions::default(),
-            )
-            .map_err(|e| derr(e.to_string()))?;
-        let track = format
-            .default_track(TrackType::Audio)
-            .ok_or_else(|| derr("no audio track".into()))?;
-        let track_id = track.id;
-        let header_frames = track.num_frames;
-        let params = track
-            .codec_params
-            .as_ref()
-            .and_then(|p| p.audio())
-            .ok_or_else(|| derr("unsupported codec".into()))?
-            .clone();
-        let decoder = symphonia::default::get_codecs()
-            .make_audio_decoder(&params, &AudioDecoderOptions::default())
-            .map_err(|e| derr(e.to_string()))?;
-        let mut me = Self {
-            path: path.to_path_buf(),
-            format,
-            decoder,
-            track_id,
-            // Taken from the first decoded packet: containers can disagree
-            // with the codec (HE-AAC states the full rate, but a decoder
-            // without SBR delivers half of it).
-            sample_rate: 0,
-            header_rate: params.sample_rate.filter(|&r| r > 0),
-            channels: params.channels.as_ref().map_or(0, |c| c.count()),
-            header_frames,
-            interleaved: Vec::new(),
-            planar: Vec::new(),
-            pending: false,
-            done: false,
-        };
-        // Decode the first packet so the real output format is known up front.
-        me.pending = me.decode_next()?;
-        if !me.pending || me.sample_rate == 0 || me.channels == 0 {
-            return Err(derr("file contains no audio".into()));
-        }
-        Ok(me)
-    }
-
-    pub fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
-    pub fn channels(&self) -> usize {
-        self.channels
-    }
-
-    /// Total length in decoded frames, if the container states it (for progress).
-    pub fn total_frames(&self) -> Option<u64> {
-        let frames = self.header_frames?;
-        Some(match self.header_rate {
-            Some(h) if h != self.sample_rate => {
-                (frames as u128 * self.sample_rate as u128 / h as u128) as u64
-            }
-            _ => frames,
-        })
-    }
-
-    /// A warning when the file holds more than can be decoded: the
-    /// container states a higher rate than the decoder delivers. This is
-    /// HE-AAC (AAC with SBR), whose upper frequencies are reconstructed by
-    /// an extension the built-in decoder doesn't support; the audio plays
-    /// at the right speed but lacks content above half the decoded rate.
-    pub fn limitation(&self) -> Option<String> {
-        let header = self.header_rate?;
-        (header > self.sample_rate).then(|| {
-            format!(
-                "{} is HE-AAC: decoded at {} Hz instead of {} Hz, so frequencies above {:.1} kHz are missing",
-                self.path
-                    .file_name()
-                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
-                self.sample_rate,
-                header,
-                self.sample_rate as f64 / 2000.0
-            )
-        })
-    }
-
-    fn derr(&self, message: String) -> Error {
-        Error::Decode {
-            path: self.path.clone(),
-            message,
-        }
-    }
-
-    /// Decode the next packet into `self.planar`. Returns `false` at the end.
-    fn decode_next(&mut self) -> Result<bool> {
-        loop {
-            if self.done {
-                return Ok(false);
-            }
-            let packet = match self.format.next_packet() {
-                Ok(Some(p)) => p,
-                Ok(None) => {
-                    self.done = true;
-                    return Ok(false);
-                }
-                Err(SymError::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    self.done = true;
-                    return Ok(false);
-                }
-                Err(e) => return Err(self.derr(e.to_string())),
-            };
-            if packet.track_id != self.track_id {
-                continue;
-            }
-            let decoded = match self.decoder.decode(&packet) {
-                Ok(buf) => buf,
-                // Corrupt packet: skip it, as players do.
-                Err(SymError::DecodeError(_)) => continue,
-                Err(e) => return Err(self.derr(e.to_string())),
-            };
-            let spec = decoded.spec();
-            let nch = spec.channels().count().max(1);
-            if self.sample_rate == 0 {
-                self.sample_rate = spec.rate();
-            } else if spec.rate() != self.sample_rate {
-                return Err(self.derr("sample rate changed mid-stream".into()));
-            }
-            if self.channels == 0 {
-                self.channels = nch;
-            }
-            if nch != self.channels {
-                return Err(self.derr("channel count changed mid-stream".into()));
-            }
-            decoded.copy_to_vec_interleaved(&mut self.interleaved);
-            let frames = self.interleaved.len() / nch;
-            if frames == 0 {
-                continue;
-            }
-            self.planar.resize(nch, Vec::new());
-            for (c, ch) in self.planar.iter_mut().enumerate() {
-                ch.clear();
-                ch.extend(self.interleaved.iter().skip(c).step_by(nch));
-            }
-            return Ok(true);
-        }
-    }
-
-    /// The next chunk of planar audio, or `None` at the end of the stream.
-    pub fn next_chunk(&mut self) -> Result<Option<&[Vec<f32>]>> {
-        let has = if self.pending {
-            self.pending = false;
-            true
-        } else {
-            self.decode_next()?
-        };
-        Ok(has.then_some(&self.planar[..]))
-    }
-}
-
-/// What can't be decoded faithfully from `path`, if anything (see
-/// [`StreamDecoder::limitation`]). Cheap: decodes only the first packet.
-pub fn decode_limitation(path: &Path) -> Option<String> {
-    StreamDecoder::open(path).ok()?.limitation()
-}
-
-/// Decode an entire audio file to 32-bit float at its native sample rate.
-///
-/// Integer PCM up to 24 bits and 32-bit float data convert losslessly.
-pub fn decode_file(path: &Path) -> Result<AudioBuffer> {
-    let mut dec = StreamDecoder::open(path)?;
-    let (rate, nch) = (dec.sample_rate(), dec.channels());
-    let mut channels = vec![Vec::new(); nch];
-    while let Some(chunk) = dec.next_chunk()? {
-        for (dst, src) in channels.iter_mut().zip(chunk) {
-            dst.extend_from_slice(src);
-        }
-    }
-    Ok(AudioBuffer::new(rate, channels))
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SampleFormat {
@@ -474,6 +257,8 @@ pub fn write_wav(
 mod tests {
     use super::*;
 
+    use crate::buffer::AudioBuffer;
+
     fn test_signal() -> AudioBuffer {
         // Includes values above full scale and tiny values: float must keep both exactly.
         let l: Vec<f32> = (0..4800).map(|i| ((i as f32) * 0.01).sin() * 1.7).collect();
@@ -546,46 +331,5 @@ mod tests {
         assert!(back.channel(0)[0] > 0.999);
         assert_eq!(back.channel(0)[1], -1.0);
         assert!(back.channel(0)[2].abs() <= 1.0 / 32768.0 + 1e-9);
-    }
-
-    #[test]
-    fn rate_and_length_come_from_the_decoded_audio() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("a.wav");
-        write_wav(
-            &path,
-            &AudioBuffer::new(24_000, vec![vec![0.25; 24_000]; 2]),
-            ExportSettings::default(),
-        )
-        .unwrap();
-        let dec = StreamDecoder::open(&path).unwrap();
-        assert_eq!(dec.sample_rate(), 24_000);
-        assert_eq!(dec.total_frames(), Some(24_000));
-        assert_eq!(dec.limitation(), None);
-        assert_eq!(decode_limitation(&path), None);
-    }
-
-    /// HE-AAC (AAC + SBR): the container states twice the rate the decoder
-    /// delivers. Decoding must use the delivered rate (correct speed and
-    /// length) and say what's missing. Needs a real file, e.g. a radio
-    /// recording: `KERF_HE_AAC_SAMPLE=show.m4a cargo test -- --ignored he_aac`.
-    #[test]
-    #[ignore]
-    fn he_aac_plays_at_the_right_speed() {
-        let path = std::env::var_os("KERF_HE_AAC_SAMPLE").expect("set KERF_HE_AAC_SAMPLE");
-        let path = Path::new(&path);
-        let mut dec = StreamDecoder::open(path).unwrap();
-        let rate = dec.sample_rate();
-        let expected = dec.total_frames().unwrap();
-        let mut frames = 0u64;
-        while let Some(c) = dec.next_chunk().unwrap() {
-            frames += c[0].len() as u64;
-        }
-        // The decoded length matches the container's duration (to a frame of 2048).
-        assert!(
-            frames.abs_diff(expected) <= 2048,
-            "{frames} vs {expected} at {rate} Hz"
-        );
-        assert!(dec.limitation().unwrap().contains("HE-AAC"));
     }
 }

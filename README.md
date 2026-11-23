@@ -51,8 +51,14 @@ MCP server so AI assistants can edit alongside you.
   shapes. Where clips on a track overlap after a move or trim, an equal-power crossfade is added
   automatically and follows the overlap as you edit; fades you made yourself are never replaced.
   Toggle under *Process → Automatic crossfades*.
-- **Import.** WAV, FLAC, MP3, OGG/Vorbis, AIFF, CAF, M4A/AAC, ALAC (via Symphonia). Files are
-  resampled with a high-quality FFT resampler when their rate differs from the project's.
+- **Import.** WAV, FLAC, MP3, OGG/Vorbis, AIFF, CAF, M4A/AAC, ALAC with the built-in decoder
+  (Symphonia). If [FFmpeg](https://ffmpeg.org) is installed, Kerf also uses it for what the
+  built-in decoder can't do fully: HE-AAC at full quality (common for radio recordings; without
+  FFmpeg it imports at the right speed but without its upper frequencies, and Kerf says so),
+  AC-3/E-AC-3, WMA, APE, WavPack, DTS and more. FFmpeg is found on the PATH automatically; choose
+  another or turn it off in *Preferences → Decoding*, or with `KERF_FFMPEG=/path/to/ffmpeg` or
+  `KERF_FFMPEG=off` for the CLI and MCP server. Files are resampled with a high-quality FFT
+  resampler when their rate differs from the project's.
 - **Small memory footprint.** Imported audio is decoded once into a disk cache and memory-mapped,
   so RAM use doesn't grow with the length of your material: a 20-minute stereo 32-bit float file
   adds about 50 MB (waveform overview data), against about 490 MB when held in memory. Reopening

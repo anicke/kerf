@@ -24,6 +24,8 @@ pub struct Prefs {
     pub time_format: kerf_core::util::TimeFormat,
     /// Put selection edges and split points on zero crossings (avoids clicks).
     pub snap_zero_crossings: bool,
+    /// Which FFmpeg decodes what the built-in decoder can't (HE-AAC, AC-3, WMA…).
+    pub ffmpeg: kerf_core::decode::FfmpegSetting,
 }
 
 impl Default for Prefs {
@@ -38,6 +40,7 @@ impl Default for Prefs {
             show_markers_panel: false,
             time_format: kerf_core::util::TimeFormat::MinSec,
             snap_zero_crossings: false,
+            ffmpeg: Default::default(),
         }
     }
 }
