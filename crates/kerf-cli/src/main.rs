@@ -117,6 +117,24 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Draw the waveform as a PNG: peaks, RMS, clipping in red, markers in yellow.
+    Waveform {
+        input: PathBuf,
+        /// Image file to write.
+        #[arg(short, long)]
+        out: PathBuf,
+        #[command(flatten)]
+        range: RangeArgs,
+        #[arg(long, default_value_t = 1200)]
+        width: u32,
+        #[arg(long, default_value_t = 300)]
+        height: u32,
+        /// Logarithmic (dB) amplitude scale, showing quiet passages.
+        #[arg(long)]
+        db: bool,
+        #[arg(long)]
+        force: bool,
+    },
     /// Run operations given as JSON (an array, or one object per line) against an input.
     Run {
         /// File of operations, or - for standard input.
@@ -318,18 +336,22 @@ struct Job {
     input: Option<PathBuf>,
     steps: Vec<Request>,
     keep_going: bool,
+    /// Where to save a waveform image produced by the steps.
+    image: Option<PathBuf>,
 }
 
 impl Job {
     fn new(input: &Path, steps: Vec<Request>) -> Self {
         let mut all = vec![Request::Open {
             path: input.to_path_buf(),
+            discard: false,
         }];
         all.extend(steps);
         Self {
             input: Some(input.to_path_buf()),
             steps: all,
             keep_going: false,
+            image: None,
         }
     }
 }
@@ -465,6 +487,35 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
                 })
                 .collect()
         }
+        Cmd::Waveform {
+            input,
+            out,
+            range,
+            width,
+            height,
+            db,
+            force,
+        } => {
+            if out.exists() && !force {
+                return Err(format!(
+                    "{} exists (use --force to replace it)",
+                    out.display()
+                ));
+            }
+            let mut job = Job::new(
+                &input,
+                vec![Request::Waveform {
+                    start: range.start,
+                    end: range.end,
+                    tracks: None,
+                    width: Some(width),
+                    height: Some(height),
+                    db_scale: db,
+                }],
+            );
+            job.image = Some(out);
+            vec![job]
+        }
         Cmd::Run {
             ops: file,
             input,
@@ -483,6 +534,7 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
                     input: None,
                     steps,
                     keep_going,
+                    image: None,
                 },
             };
             job.keep_going = keep_going;
@@ -543,6 +595,26 @@ fn run_job(job: &Job, cache: Option<Arc<AudioCache>>, show_progress: bool) -> Ve
     out
 }
 
+/// Write the waveform from the outcomes to `path`, keeping the base64 out of
+/// the printed result.
+fn save_image(outcomes: &mut [Outcome], path: &Path) -> Result<(), String> {
+    use base64::Engine;
+    for o in outcomes {
+        if let Ok(Response {
+            data: kerf_core::ops::Data::Waveform(w),
+            ..
+        }) = &mut o.result
+        {
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(&w.png_base64)
+                .map_err(|e| e.to_string())?;
+            std::fs::write(path, png).map_err(|e| format!("{}: {e}", path.display()))?;
+            w.png_base64 = format!("(written to {})", path.display());
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let jobs = match plan(cli.cmd) {
@@ -567,7 +639,13 @@ fn main() -> ExitCode {
     let many = jobs.len() > 1;
     let mut failed = false;
     for job in &jobs {
-        let outcomes = run_job(job, cache.clone(), show_progress);
+        let mut outcomes = run_job(job, cache.clone(), show_progress);
+        if let Some(path) = &job.image {
+            if let Err(e) = save_image(&mut outcomes, path) {
+                eprintln!("error: {e}");
+                failed = true;
+            }
+        }
         failed |= outcomes.iter().any(|o| o.result.is_err());
         if cli.json {
             println!("{}", output::json(job.input.as_deref(), &outcomes));

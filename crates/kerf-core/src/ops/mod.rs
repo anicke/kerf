@@ -105,11 +105,15 @@ impl Session {
     pub fn execute_with_progress(&mut self, req: Request, progress: Progress) -> OpResult {
         use Request as R;
         match req {
-            R::New => {
+            R::New { discard } => {
+                self.check_discard(discard)?;
                 self.reset(Project::default(), None);
                 Ok(done("New empty project"))
             }
-            R::Open { path } => self.open(&path),
+            R::Open { path, discard } => {
+                self.check_discard(discard)?;
+                self.open(&path)
+            }
             R::Import { path, at } => {
                 let at = self.opt_time(at.as_ref())?.unwrap_or(0);
                 let tid = self
@@ -194,6 +198,42 @@ impl Session {
                     apply,
                     progress,
                 )
+            }
+
+            R::FindSilences {
+                threshold_db,
+                min_secs,
+                start,
+                end,
+                tracks,
+            } => {
+                let (a, b) = self.range(start.as_ref(), end.as_ref())?;
+                let t = self.tracks(tracks.as_deref())?;
+                self.find_silences(
+                    a,
+                    b,
+                    t,
+                    threshold_db.unwrap_or(-50.0),
+                    min_secs.unwrap_or(1.0).max(0.0),
+                    progress,
+                )
+            }
+            R::Waveform {
+                start,
+                end,
+                tracks,
+                width,
+                height,
+                db_scale,
+            } => {
+                let (a, b) = self.range(start.as_ref(), end.as_ref())?;
+                let t = self.tracks(tracks.as_deref())?;
+                let o = crate::waveform::Options {
+                    width: width.unwrap_or(1200).clamp(200, 4000),
+                    height: height.unwrap_or(300).clamp(100, 2000),
+                    db_scale,
+                };
+                self.waveform(a, b, &t, &o, progress)
             }
 
             // --- Edit -------------------------------------------------------
@@ -565,6 +605,16 @@ impl Session {
     // Session
     // -----------------------------------------------------------------------
 
+    fn check_discard(&self, discard: bool) -> OpResult<()> {
+        if self.doc.is_dirty() && !discard {
+            return Err(OpError::new(
+                ErrorCode::UnsavedChanges,
+                "the project has unsaved changes: save it first, or pass discard to drop them",
+            ));
+        }
+        Ok(())
+    }
+
     fn open(&mut self, path: &Path) -> OpResult {
         if !path.exists() {
             return Err(OpError::new(
@@ -731,6 +781,119 @@ impl Session {
                 }
             ),
             data: Data::Levels(levels),
+        })
+    }
+
+    fn find_silences(
+        &self,
+        a: Frame,
+        b: Frame,
+        tracks: Vec<TrackId>,
+        threshold_db: f64,
+        min_secs: f64,
+        progress: Progress,
+    ) -> OpResult {
+        const MAX_RANGES: usize = 500;
+        let p = self.project();
+        let sr = p.sample_rate;
+        let threshold = crate::util::db_to_gain(threshold_db) as f32;
+        let min_len = (min_secs * sr as f64).round() as Frame;
+        let mut ranges: Vec<(Frame, Frame)> = Vec::new();
+        let mut run_start: Option<Frame> = None;
+        let mut pos = a;
+        let total = (b - a) as f64;
+        let close = |from: Frame, to: Frame, ranges: &mut Vec<(Frame, Frame)>| {
+            if to - from >= min_len.max(1) {
+                ranges.push((from, to));
+            }
+        };
+        render::for_each_chunk(p, a, b, &RenderOptions::tracks(tracks), |chunk, n| {
+            for i in 0..n {
+                let quiet = chunk.iter().all(|c| c[i].abs() < threshold);
+                match (quiet, run_start) {
+                    (true, None) => run_start = Some(pos),
+                    (false, Some(s)) => {
+                        close(s, pos, &mut ranges);
+                        run_start = None;
+                    }
+                    _ => {}
+                }
+                pos += 1;
+            }
+            Ok(progress((pos - a) as f64 / total))
+        })?;
+        if let Some(s) = run_start {
+            close(s, b, &mut ranges);
+        }
+        let truncated = ranges.len() > MAX_RANGES;
+        let total_secs: f64 = ranges.iter().map(|(s, e)| (e - s) as f64).sum::<f64>() / sr as f64;
+        let ranges: Vec<Span> = ranges
+            .into_iter()
+            .take(MAX_RANGES)
+            .map(|(s, e)| Span {
+                start: TimePos::new(s, sr),
+                end: TimePos::new(e, sr),
+                length: TimePos::new(e - s, sr),
+            })
+            .collect();
+        Ok(Response {
+            summary: format!(
+                "{} silent range(s) below {threshold_db} dBFS, {:.1} s in total",
+                ranges.len(),
+                total_secs
+            ),
+            data: Data::Silences(Silences {
+                threshold_db,
+                ranges,
+                truncated,
+            }),
+        })
+    }
+
+    fn waveform(
+        &self,
+        a: Frame,
+        b: Frame,
+        tracks: &[TrackId],
+        o: &crate::waveform::Options,
+        progress: Progress,
+    ) -> OpResult {
+        use base64::Engine;
+        let p = self.project();
+        let sr = p.sample_rate;
+        let img = crate::waveform::render_png(p, tracks, a, b, o, progress)?;
+        let markers = p
+            .markers
+            .iter()
+            .filter(|m| m.position >= a && m.position < b)
+            .map(|m| WaveformMarker {
+                x: crate::waveform::column_of(m.position, a, b, o.width),
+                name: m.name.clone(),
+                position: TimePos::new(m.position, sr),
+            })
+            .collect();
+        let secs_per_px = (b - a) as f64 / sr as f64 / o.width as f64;
+        Ok(Response {
+            summary: format!(
+                "Waveform of {}: {}×{} px, {:.4} s per pixel, grid every {} s",
+                self.fmt_span(a, b),
+                o.width,
+                o.height,
+                secs_per_px,
+                img.grid_secs
+            ),
+            data: Data::Waveform(WaveformInfo {
+                png_base64: base64::engine::general_purpose::STANDARD.encode(&img.png),
+                width: o.width,
+                height: o.height,
+                start: TimePos::new(a, sr),
+                end: TimePos::new(b, sr),
+                channels: p.channels,
+                seconds_per_pixel: secs_per_px,
+                grid_secs: img.grid_secs,
+                db_scale: o.db_scale,
+                markers,
+            }),
         })
     }
 

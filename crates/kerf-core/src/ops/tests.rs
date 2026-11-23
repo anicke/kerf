@@ -56,9 +56,10 @@ fn times_parse_in_every_notation() {
 #[test]
 fn every_request_round_trips_through_json() {
     let reqs = vec![
-        Request::New,
+        Request::New { discard: true },
         Request::Open {
             path: "a.wav".into(),
+            discard: false,
         },
         Request::Split {
             at: Time::secs(1.0),
@@ -355,7 +356,11 @@ fn responses_round_trip_through_json() {
     let dir = tempfile::tempdir().unwrap();
     let wav = tone(dir.path(), "a.wav", 2.0);
     let mut s = Session::new(None);
-    s.execute(Request::Open { path: wav }).unwrap();
+    s.execute(Request::Open {
+        path: wav,
+        discard: false,
+    })
+    .unwrap();
     for req in [
         Request::Info,
         Request::History,
@@ -369,4 +374,71 @@ fn responses_round_trip_through_json() {
         let j = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<Response>(&j).unwrap(), r, "{j}");
     }
+}
+
+#[test]
+fn open_and_new_protect_unsaved_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let wav = tone(dir.path(), "a.wav", 2.0);
+    let mut s = Session::new(None);
+    ok(&mut s, json!({"op": "open", "path": wav}));
+    ok(&mut s, json!({"op": "split", "at": 1}));
+    assert_eq!(err_code(&mut s, json!({"op": "new"})), "unsaved_changes");
+    assert_eq!(
+        err_code(&mut s, json!({"op": "open", "path": wav})),
+        "unsaved_changes"
+    );
+    assert_eq!(
+        ok(&mut s, json!({"op": "history"}))["undo"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    ok(&mut s, json!({"op": "new", "discard": true}));
+}
+
+#[test]
+fn find_silences_between_sounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = tone(dir.path(), "a.wav", 1.0);
+    let mut s = Session::new(None);
+    ok(&mut s, json!({"op": "open", "path": a}));
+    ok(&mut s, json!({"op": "import", "path": a, "at": 3}));
+    // Mostly silence; a 2 s gap between the tones and nothing after.
+    let r = ok(&mut s, json!({"op": "find_silences", "min_secs": 0.5}));
+    let ranges = r["ranges"].as_array().unwrap();
+    assert_eq!(ranges.len(), 1, "{r}");
+    assert!((ranges[0]["start"]["seconds"].as_f64().unwrap() - 1.0).abs() < 0.01);
+    assert!((ranges[0]["length"]["seconds"].as_f64().unwrap() - 2.0).abs() < 0.01);
+    let r = ok(&mut s, json!({"op": "find_silences", "min_secs": 2.5}));
+    assert!(r["ranges"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn waveform_image_with_markers() {
+    use base64::Engine;
+    let dir = tempfile::tempdir().unwrap();
+    let a = tone(dir.path(), "a.wav", 4.0);
+    let mut s = Session::new(None);
+    ok(&mut s, json!({"op": "open", "path": a}));
+    ok(&mut s, json!({"op": "add_marker", "at": 1, "name": "One"}));
+    let r = ok(
+        &mut s,
+        json!({"op": "waveform", "width": 400, "height": 120}),
+    );
+    assert_eq!(r["type"], "waveform");
+    assert_eq!(r["markers"][0]["x"], 100);
+    assert_eq!(r["seconds_per_pixel"], 0.01);
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(r["png_base64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+    // Sizes are kept within limits.
+    let r = ok(
+        &mut s,
+        json!({"op": "waveform", "width": 5, "start": 1, "end": 2}),
+    );
+    assert_eq!(r["width"], 200);
+    assert!(r["markers"].as_array().unwrap().len() == 1);
 }

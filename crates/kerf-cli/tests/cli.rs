@@ -271,3 +271,23 @@ fn usage_errors_exit_with_2() {
     let o = kerf(&["detect", "x.wav", "--setlist", "/no/setlist.txt"]);
     assert_eq!(o.status.code(), Some(2));
 }
+
+#[test]
+fn waveform_png() {
+    let dir = tempfile::tempdir().unwrap();
+    let show = live_show(dir.path());
+    let png = dir.path().join("w.png");
+    let o = kerf(&[
+        "waveform",
+        s(&show),
+        "-o",
+        s(&png),
+        "--width",
+        "500",
+        "--db",
+    ]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(&std::fs::read(&png).unwrap()[1..4], b"PNG");
+    let o = kerf(&["waveform", s(&show), "-o", s(&png)]);
+    assert_eq!(o.status.code(), Some(2), "won't overwrite without --force");
+}

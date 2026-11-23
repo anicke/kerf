@@ -16,6 +16,7 @@ use crate::Frame;
 /// (`83.5`) or a string: `"1:23.5"` (m:ss), `"1:02:03"` (h:mm:ss), `"83.5s"`
 /// (seconds) or `"4008000smp"` (sample frames, exact).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum Time {
     Seconds(f64),
@@ -61,6 +62,7 @@ impl std::str::FromStr for Time {
 
 /// A time reported back: exact frames, seconds, and a readable `m:ss.mmm`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TimePos {
     pub seconds: f64,
     pub frames: Frame,
@@ -86,6 +88,7 @@ impl TimePos {
 pub type Tracks = Option<Vec<u64>>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
     Linear,
@@ -107,6 +110,7 @@ impl From<Shape> for crate::FadeShape {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Paste {
     #[default]
@@ -116,6 +120,7 @@ pub enum Paste {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
     #[default]
@@ -125,6 +130,7 @@ pub enum Level {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum SongPlacement {
     /// Where the music resumes, minus the pre-roll.
@@ -136,6 +142,7 @@ pub enum SongPlacement {
 
 /// What to export.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ExportKind {
     /// The mix (or `start..end` of it) as one file. `path` is the file.
@@ -151,6 +158,7 @@ pub enum ExportKind {
 
 /// Starting points for export settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Preset {
     /// 32-bit float WAV at the project's rate and channels (lossless, no dither).
@@ -163,6 +171,7 @@ pub enum Preset {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Bits {
     #[serde(alias = "16")]
@@ -176,6 +185,7 @@ pub enum Bits {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FileType {
     Wav,
@@ -184,6 +194,7 @@ pub enum FileType {
 
 /// Export parameters: a preset plus optional overrides.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct ExportOptions {
     pub kind: ExportKind,
@@ -214,14 +225,23 @@ pub struct ExportOptions {
 
 /// One operation. In JSON: `{"op": "split", "at": "1:23.5"}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     // --- Session ------------------------------------------------------------
     /// Start an empty project (it adopts the format of the first import).
-    New,
-    /// Open a `.kerf` project, or an audio file as a new project.
+    /// Refuses while there are unsaved changes unless `discard` is true.
+    New {
+        #[serde(default)]
+        discard: bool,
+    },
+    /// Open a `.kerf` project, or an audio file (WAV, FLAC, MP3, OGG, AIFF,
+    /// M4A…) as a new project. Refuses while there are unsaved changes unless
+    /// `discard` is true.
     Open {
         path: PathBuf,
+        #[serde(default)]
+        discard: bool,
     },
     /// Add an audio file as a new track (at `at`, default 0).
     Import {
@@ -237,8 +257,11 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// Undo the last edit.
     Undo,
+    /// Redo the last undone edit.
     Redo,
+    /// The undoable steps, oldest first, and whether there are unsaved changes.
     History,
 
     // --- Inspect ------------------------------------------------------------
@@ -283,7 +306,45 @@ pub enum Request {
         apply: bool,
     },
 
+    /// Ranges quieter than `threshold_db` (peak, dBFS; default -50) for at
+    /// least `min_secs` (default 1). Live recordings rarely have true
+    /// silence between songs: use `detect_songs` for those.
+    FindSilences {
+        #[serde(default)]
+        threshold_db: Option<f64>,
+        #[serde(default)]
+        min_secs: Option<f64>,
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+    },
+    /// Draw the waveform of a range (default: everything) as a PNG image,
+    /// one lane per channel: peaks in blue, RMS lighter, samples over 0 dBFS
+    /// in red, markers as yellow lines, faint vertical lines every
+    /// `grid_secs`. The response gives the time of each pixel column.
+    Waveform {
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+        /// Image width in pixels (200–4000, default 1200).
+        #[serde(default)]
+        width: Option<u32>,
+        /// Image height in pixels (100–2000, default 300).
+        #[serde(default)]
+        height: Option<u32>,
+        /// Draw amplitude on a 60 dB log scale, making quiet passages visible.
+        #[serde(default)]
+        db_scale: bool,
+    },
+
     // --- Edit ---------------------------------------------------------------
+    /// Split clips at a time (non-destructive: the audio is unchanged).
     Split {
         at: Time,
         #[serde(default)]
@@ -444,8 +505,12 @@ pub enum Request {
     },
 
     // --- Export -------------------------------------------------------------
-    /// Render to file(s). Existing files are only replaced with `force`;
-    /// `dry_run` reports what would be written without writing.
+    /// Render to file(s): `kind` mix (one file, optionally `start`..`end`),
+    /// tracks (one file per marker region into the folder `path`, tagged),
+    /// cue (one file plus a CUE sheet) or stems (one file per track).
+    /// `preset` wav (32-bit float), cd (16-bit 44.1 kHz, CD-safe) or flac
+    /// (24-bit). Existing files are only replaced with `force`; run with
+    /// `dry_run` first to see the exact files, lengths and any warnings.
     Export {
         path: PathBuf,
         #[serde(flatten)]
@@ -484,6 +549,8 @@ pub enum Data {
     Levels(Levels),
     Songs(SongsReport),
     Normalized { tracks: Vec<NormalizedTrack> },
+    Silences(Silences),
+    Waveform(WaveformInfo),
     Album(AlbumReport),
     AlbumLoudness(LoudnessChange),
     Export(ExportReport),
@@ -576,6 +643,46 @@ pub struct SongStart {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Silences {
+    pub threshold_db: f64,
+    pub ranges: Vec<Span>,
+    /// More ranges were found than are listed.
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Span {
+    pub start: TimePos,
+    pub end: TimePos,
+    pub length: TimePos,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WaveformInfo {
+    /// The image (PNG, base64).
+    pub png_base64: String,
+    pub width: u32,
+    pub height: u32,
+    pub start: TimePos,
+    pub end: TimePos,
+    pub channels: u16,
+    /// Timeline seconds covered by one pixel column.
+    pub seconds_per_pixel: f64,
+    /// Spacing of the faint vertical grid lines.
+    pub grid_secs: f64,
+    pub db_scale: bool,
+    /// Markers in view, with their pixel column.
+    pub markers: Vec<WaveformMarker>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WaveformMarker {
+    pub x: u32,
+    pub name: String,
+    pub position: TimePos,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NormalizedTrack {
     pub track: u64,
     pub measured: Option<f64>,
@@ -663,6 +770,8 @@ pub enum ErrorCode {
     NothingSelected,
     Silent,
     NothingToUndo,
+    /// The project has unsaved changes (pass `discard` to drop them).
+    UnsavedChanges,
     Cancelled,
     Unsupported,
 }

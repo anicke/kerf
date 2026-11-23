@@ -123,6 +123,7 @@ kerf-cli analyze *.wav                              # peak, RMS, LUFS and clippi
 kerf-cli info show.kerf                             # tracks, clips, markers, album details
 kerf-cli export *.flac --preset cd --out cd/        # batch convert
 kerf-cli export show.kerf --kind tracks --preset flac --out flac/ --dry-run
+kerf-cli waveform show.kerf -o show.png --db        # a picture: peaks, RMS, clipping, markers
 kerf-cli run --ops edits.jsonl show.wav             # any operation, as JSON
 ```
 
@@ -130,7 +131,34 @@ Times are seconds (`83.5`), `m:ss` (`1:23.5`), `h:mm:ss`, or exact samples (`400
 `kerf-cli run` accepts any engine operation (open, import, save, undo/redo, split, delete, clear,
 crop, copy/cut/paste, gain, normalize, fades, markers, album details and loudness, export) as a
 JSON array or one object per line, e.g. `{"op": "fade_out", "start": "41:10", "end": "41:18"}`.
-These are the operations of `kerf_core::ops`, which the planned MCP server will expose too.
+These are the operations of `kerf_core::ops`, which the MCP server exposes too.
+
+## AI assistants (MCP)
+
+`kerf-mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server, so an assistant
+such as Claude can open, inspect, edit and export audio with Kerf. Add it to your client's MCP
+configuration, naming the folders it may use:
+
+```json
+{
+  "mcpServers": {
+    "kerf": { "command": "kerf-mcp", "args": ["--allow", "/home/me/Music"] }
+  }
+}
+```
+
+- **Tools:** every engine operation (the same as `kerf-cli run`), generated from the operation
+  types so they always match. Each returns a one-line summary plus details as JSON.
+- **Seeing audio:** an assistant can't listen, so `waveform` returns a picture of any range
+  (zoom in by choosing start and end), and `analyze`, `find_silences` and `detect_songs` report
+  levels and positions.
+- **Safe by design:** every edit is one undoable step; `open` and `new` won't drop unsaved changes
+  unless asked; exports never overwrite without `force`, and dry runs show exactly what would be
+  written; files are only read or written inside the `--allow` folders (default: the folder it
+  was started in).
+- **Resources:** `kerf://project`, `kerf://markers`, `kerf://history`. **Prompt:**
+  `prepare_live_album` walks through detecting, checking, naming, levelling, tagging and
+  exporting a concert. Long operations report progress and can be cancelled.
 
 ## Layout
 
@@ -139,6 +167,7 @@ These are the operations of `kerf_core::ops`, which the planned MCP server will 
 | `crates/kerf-core` | UI-free engine: model, edits, undo, mixing, analysis, I/O, projects. Fully unit-tested. |
 | `crates/kerf-app`  | Desktop app (egui/eframe), real-time playback (cpal). |
 | `crates/kerf-cli`  | `kerf-cli` command-line tool on the `kerf_core::ops` operations layer. |
+| `crates/kerf-mcp`  | `kerf-mcp` MCP server (stdio) on the same operations. |
 
 `cargo run -p kerf-core --example demo_project -- <dir>` generates a demo project that exercises
 most features.

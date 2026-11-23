@@ -17,7 +17,7 @@ trim, fades and crossfades; peak, RMS and BS.1770 loudness normalization; memory
 export with an Audio CD preset; keyboard navigation, markers panel, crash recovery, preferences and
 device selection; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
 FLAC export, album loudness and the Album window; a JSON operations layer and the `kerf-cli`
-command-line tool.
+command-line tool; the `kerf-mcp` MCP server with waveform images.
 
 ## Positioning: what makes Kerf stand out
 
@@ -80,6 +80,12 @@ The foundation for both the CLI and MCP.
 Size: about 2–3 days.
 
 ## Phase 3: MCP server (headless)
+
+**Status:** done. `kerf-mcp` (stdio, `rmcp` 3.11) serves one tool per `ops` request, generated
+from its JSON Schema; `waveform` (PNG) and `find_silences` were added to `ops` (and the CLI).
+Resources, the `prepare_live_album` prompt, progress and cancellation, and an `--allow` folder
+sandbox are in. Deferred to Phase 5: checkpoint/compare and the null test. Audio content is not
+sent to the model.
 
 Lets any MCP client (Claude Desktop, Claude Code, IDEs) drive Kerf with no shell access.
 

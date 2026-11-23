@@ -178,6 +178,23 @@ fn print_response(r: &Response) {
                 println!("  next redo: {r}");
             }
         }
+        Data::Silences(sil) => {
+            for r in &sil.ranges {
+                println!(
+                    "  {:>12} – {:<12} ({})",
+                    r.start.time, r.end.time, r.length.time
+                );
+            }
+            if sil.truncated {
+                println!("  …");
+            }
+        }
+        Data::Waveform(w) => {
+            for m in &w.markers {
+                println!("  x = {:>4}  {:>12}  {}", m.x, m.position.time, m.name);
+            }
+            println!("  {}", w.png_base64);
+        }
         Data::None
         | Data::Levels(_)
         | Data::Track { .. }

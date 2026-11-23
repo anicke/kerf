@@ -35,6 +35,7 @@ pub mod resample;
 pub mod session;
 pub mod store;
 pub mod util;
+pub mod waveform;
 
 pub use buffer::AudioBuffer;
 pub use cache::AudioCache;
