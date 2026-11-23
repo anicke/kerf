@@ -162,6 +162,13 @@ configuration, naming the folders it may use:
   unless asked; exports never overwrite without `force`, and dry runs show exactly what would be
   written; files are only read or written inside the `--allow` folders (default: the folder it
   was started in).
+- **In the app, while you watch:** turn on *Preferences → Assistant (MCP)* and configure your
+  client with `{"command": "kerf-mcp", "args": ["--app"]}` (Preferences shows the exact line, with
+  a Copy button). The assistant then works on the project you have open: each edit appears on the
+  timeline at once and is one undo step labelled "AI: …". Its operations run on a snapshot in the
+  background and are applied between your own edits, never during a drag, so you can keep working,
+  undo anything, or press *Disconnect* in the status bar. It can't open or close projects there.
+  Only programs you run can connect (a local connection with a secret token only you can read).
 - **Resources:** `kerf://project`, `kerf://markers`, `kerf://history`. **Prompt:**
   `prepare_live_album` walks through detecting, checking, naming, levelling, tagging and
   exporting a concert. Long operations report progress and can be cancelled.

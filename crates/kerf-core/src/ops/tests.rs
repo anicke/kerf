@@ -442,3 +442,31 @@ fn waveform_image_with_markers() {
     assert_eq!(r["width"], 200);
     assert!(r["markers"].as_array().unwrap().len() == 1);
 }
+
+#[test]
+fn sessions_wrap_existing_documents_with_labelled_steps() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = tone(dir.path(), "a.wav", 2.0);
+    let mut s = Session::new(None);
+    ok(&mut s, json!({"op": "open", "path": a}));
+    ok(&mut s, json!({"op": "split", "at": 1}));
+    ok(&mut s, json!({"op": "copy", "start": 0, "end": 0.5}));
+    let clip = s.take_clipboard();
+    assert!(clip.is_some());
+
+    // Continue the same document elsewhere, with labelled steps.
+    let mut t = Session::from_document(s.into_document(), None);
+    t.set_label_prefix("AI: ");
+    t.set_clipboard(clip);
+    ok(&mut t, json!({"op": "paste", "at": 2}));
+    ok(&mut t, json!({"op": "add_marker", "at": 1, "name": "M"}));
+    let h = ok(&mut t, json!({"op": "history"}));
+    assert_eq!(
+        h["undo"],
+        json!([
+            "Split at 0:01.000",
+            "AI: Paste 0:00.500 at 0:02.000",
+            "AI: Add marker \"M\" at 0:01.000"
+        ])
+    );
+}

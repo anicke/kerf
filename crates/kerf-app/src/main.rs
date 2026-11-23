@@ -2,6 +2,7 @@
 
 mod album_ui;
 mod app;
+mod assistant;
 mod audio;
 mod detect_ui;
 mod jobs;

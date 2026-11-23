@@ -54,6 +54,8 @@ pub struct Session {
     clipboard: Option<Clipboard>,
     /// Name of the audio file opened as a project (for export file names).
     source_name: Option<String>,
+    /// Prepended to every undo label (e.g. "AI: ").
+    label_prefix: String,
 }
 
 impl Session {
@@ -65,9 +67,40 @@ impl Session {
             cache,
             clipboard: None,
             source_name: None,
+            label_prefix: String::new(),
         };
         s.reset(Project::default(), None);
         s
+    }
+
+    /// A session around an existing document (e.g. a snapshot of what an
+    /// editor has open). Its history, path and saved state are kept.
+    pub fn from_document(doc: Document, cache: Option<Arc<AudioCache>>) -> Self {
+        Self {
+            doc,
+            cache,
+            clipboard: None,
+            source_name: None,
+            label_prefix: String::new(),
+        }
+    }
+
+    pub fn into_document(self) -> Document {
+        self.doc
+    }
+
+    /// Prefix every undo step this session makes, e.g. "AI: Split at 1:00".
+    pub fn set_label_prefix(&mut self, prefix: impl Into<String>) {
+        self.label_prefix = prefix.into();
+    }
+
+    /// The clipboard of copy/cut/paste, to carry between sessions.
+    pub fn take_clipboard(&mut self) -> Option<Clipboard> {
+        self.clipboard.take()
+    }
+
+    pub fn set_clipboard(&mut self, clipboard: Option<Clipboard>) {
+        self.clipboard = clipboard;
     }
 
     pub fn document(&self) -> &Document {
@@ -116,9 +149,7 @@ impl Session {
             }
             R::Import { path, at } => {
                 let at = self.opt_time(at.as_ref())?.unwrap_or(0);
-                let tid = self
-                    .doc
-                    .apply("Import", |p| session::import_file(p, &path, at))?;
+                let tid = self.apply("Import", |p| session::import_file(p, &path, at))?;
                 let p = self.project();
                 let warning = crate::io::decode_limitation(&path)
                     .map_or_else(String::new, |w| format!(". Warning: {w}"));
@@ -343,9 +374,7 @@ impl Session {
                     independent,
                 };
                 let label = format!("Normalize to {} {}", s.target_db, mode.unit());
-                let results = self
-                    .doc
-                    .apply(label.clone(), |p| edit::normalize(p, &t, range, &s))?;
+                let results = self.apply(label.clone(), |p| edit::normalize(p, &t, range, &s))?;
                 Ok(Response {
                     summary: label,
                     data: Data::Normalized {
@@ -400,9 +429,7 @@ impl Session {
             R::AddMarker { at, name } => {
                 let at = self.time(&at)?;
                 let label = format!("Add marker \"{name}\" at {}", self.fmt(at));
-                let id = self
-                    .doc
-                    .apply(label.clone(), |p| Ok(p.add_marker(at, name)))?;
+                let id = self.apply(label.clone(), |p| Ok(p.add_marker(at, name)))?;
                 Ok(Response {
                     summary: label,
                     data: Data::Marker { marker: id.0 },
@@ -575,6 +602,16 @@ impl Session {
         }
     }
 
+    /// [`Document::apply`] with the label prefix.
+    fn apply<T>(
+        &mut self,
+        label: impl Into<String>,
+        f: impl FnOnce(&mut Project) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        let label = format!("{}{}", self.label_prefix, label.into());
+        self.doc.apply(label, f)
+    }
+
     /// Run an undoable edit and report it. Edits that change nothing say so.
     fn edit(
         &mut self,
@@ -583,7 +620,7 @@ impl Session {
     ) -> OpResult {
         let label = label.into();
         let rev = self.doc.revision();
-        self.doc.apply(label.clone(), f)?;
+        self.apply(label.clone(), f)?;
         Ok(done(if self.doc.revision() == rev {
             format!("{label}: nothing changed")
         } else {
@@ -924,7 +961,7 @@ impl Session {
         }
         let names = detect::marker_names(setlist, positions.len());
         if apply {
-            self.doc.apply("Detect song starts", |p| {
+            self.apply("Detect song starts", |p| {
                 detect::apply_markers(p, a, b, &positions, &names)
             })?;
         }
@@ -1062,7 +1099,7 @@ impl Session {
         let gain = album::album_gain_db(&a, target, ceiling).unwrap_or(0.0);
         let limited = (gain - (target - before)).abs() > 1e-9;
         let gain = (gain * 100.0).round() / 100.0;
-        self.doc.apply(format!("Album gain {gain:+.2} dB"), |p| {
+        self.apply(format!("Album gain {gain:+.2} dB"), |p| {
             album::adjust_master_gain(p, gain)
         })?;
         let change = LoudnessChange {

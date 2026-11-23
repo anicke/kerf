@@ -12,8 +12,9 @@ use rmcp::ServiceExt;
     name = "kerf-mcp",
     version,
     about = "MCP server for the Kerf audio editor (stdio).",
-    after_help = "Example client configuration:\n  \
-                  {\"command\": \"kerf-mcp\", \"args\": [\"--allow\", \"/home/me/Music\"]}"
+    after_help = "Example client configurations:\n  \
+                  {\"command\": \"kerf-mcp\", \"args\": [\"--allow\", \"/home/me/Music\"]}\n  \
+                  {\"command\": \"kerf-mcp\", \"args\": [\"--app\"]}   (edit what's open in the Kerf app)"
 )]
 struct Args {
     /// Folder the server may read and write (repeatable). Defaults to the
@@ -23,11 +24,30 @@ struct Args {
     /// Decode audio into memory instead of the shared disk cache.
     #[arg(long)]
     no_cache: bool,
+    /// Work on the project open in the running Kerf app (turn on
+    /// Preferences → Assistant there) instead of a session of its own.
+    #[arg(long, conflicts_with_all = ["allow", "no_cache"])]
+    app: bool,
+    /// Connection file the app writes (default: Kerf's runtime folder).
+    #[arg(long, value_name = "FILE", requires = "app")]
+    connection: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let args = Args::parse();
+    if args.app {
+        let file = args
+            .connection
+            .unwrap_or_else(kerf_mcp::host::default_connection_file);
+        return match kerf_mcp::host::bridge(&file).await {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("kerf-mcp: {e}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     let roots = if args.allow.is_empty() {
         vec![std::env::current_dir().unwrap_or_else(|_| ".".into())]
     } else {

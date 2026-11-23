@@ -7,6 +7,8 @@
 //! returns a picture. Files are only read or written inside the folders the
 //! server was started with.
 
+pub mod editor;
+pub mod host;
 pub mod sandbox;
 pub mod tools;
 
@@ -42,10 +44,52 @@ You can't hear the audio, so look and measure: `info` for the structure, `analyz
 Exports never overwrite files unless `force` is set; run `export` with `dry_run` first and show \
 the user what will be written. For a live concert, use the prompt `prepare_live_album`.";
 
+/// Where operations run: a session of the server's own, or an editor's
+/// open project (see the app's assistant host).
+pub trait Executor: Send + Sync + 'static {
+    /// Run one operation (on a blocking thread). `progress` gets 0..=1 and
+    /// returns `false` to cancel.
+    fn execute(
+        &self,
+        request: Request,
+        progress: &mut dyn FnMut(f64) -> bool,
+    ) -> Result<Response, OpError>;
+}
+
+/// A session of the server's own (headless use).
+pub struct LocalSession(Mutex<Session>);
+
+impl LocalSession {
+    pub fn new(cache: Option<Arc<AudioCache>>) -> Self {
+        Self(Mutex::new(Session::new(cache)))
+    }
+}
+
+impl Executor for LocalSession {
+    fn execute(
+        &self,
+        request: Request,
+        progress: &mut dyn FnMut(f64) -> bool,
+    ) -> Result<Response, OpError> {
+        let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        s.execute_with_progress(request, progress)
+    }
+}
+
+/// How a server presents itself.
+#[derive(Clone, Default)]
+pub struct Options {
+    /// Operations not offered as tools (e.g. `open` inside the app).
+    pub hidden_tools: Vec<&'static str>,
+    /// Replaces the opening paragraph of the instructions.
+    pub intro: Option<String>,
+}
+
 struct Inner {
-    session: Mutex<Session>,
+    executor: Arc<dyn Executor>,
     sandbox: Sandbox,
     tools: Vec<Tool>,
+    instructions: String,
 }
 
 /// The MCP server. Cheap to clone; clones share the session.
@@ -55,12 +99,33 @@ pub struct KerfServer {
 }
 
 impl KerfServer {
+    /// A headless server with a session of its own.
     pub fn new(sandbox: Sandbox, cache: Option<Arc<AudioCache>>) -> Self {
+        Self::with_executor(
+            sandbox,
+            Arc::new(LocalSession::new(cache)),
+            Options::default(),
+        )
+    }
+
+    pub fn with_executor(sandbox: Sandbox, executor: Arc<dyn Executor>, options: Options) -> Self {
+        let tools = tools::tools()
+            .into_iter()
+            .filter(|t| !options.hidden_tools.contains(&t.name.as_ref()))
+            .collect();
+        let instructions = match &options.intro {
+            Some(intro) => {
+                let rest = INSTRUCTIONS.split_once("\n\n").map_or("", |x| x.1);
+                format!("{intro}\n\n{rest}")
+            }
+            None => INSTRUCTIONS.to_string(),
+        };
         Self {
             inner: Arc::new(Inner {
-                session: Mutex::new(Session::new(cache)),
+                executor,
                 sandbox,
-                tools: tools::tools(),
+                tools,
+                instructions,
             }),
         }
     }
@@ -90,7 +155,6 @@ impl KerfServer {
         };
         let inner = self.inner.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let mut session = inner.session.lock().unwrap_or_else(|e| e.into_inner());
             let mut last = -1.0;
             let mut progress = |p: f64| {
                 if p - last >= 0.01 {
@@ -99,7 +163,7 @@ impl KerfServer {
                 }
                 !ct.as_ref().is_some_and(|c| c.is_cancelled())
             };
-            session.execute_with_progress(request, &mut progress)
+            inner.executor.execute(request, &mut progress)
         })
         .await
         .map_err(|e| ErrorData::internal_error(format!("operation failed: {e}"), None))?;
@@ -107,12 +171,6 @@ impl KerfServer {
             let _ = f.await;
         }
         Ok(result)
-    }
-
-    /// Read-only view of the session for resources.
-    fn query(&self, request: Request) -> Result<Response, OpError> {
-        let mut session = self.inner.session.lock().unwrap_or_else(|e| e.into_inner());
-        session.execute(request)
     }
 }
 
@@ -185,7 +243,7 @@ impl ServerHandler for KerfServer {
                 .build(),
         );
         info.server_info = Implementation::new("kerf", env!("CARGO_PKG_VERSION"));
-        info.instructions = Some(INSTRUCTIONS.into());
+        info.instructions = Some(self.inner.instructions.clone());
         info
     }
 
@@ -267,7 +325,8 @@ impl ServerHandler for KerfServer {
             }
         };
         let r = self
-            .query(req)
+            .run(req, None)
+            .await?
             .map_err(|e| ErrorData::internal_error(e.message, None))?;
         let mut v = data_json(&r);
         if let Some(k) = key {

@@ -17,7 +17,8 @@ trim, fades and crossfades; peak, RMS and BS.1770 loudness normalization; memory
 export with an Audio CD preset; keyboard navigation, markers panel, crash recovery, preferences and
 device selection; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
 FLAC export, album loudness and the Album window; a JSON operations layer and the `kerf-cli`
-command-line tool; the `kerf-mcp` MCP server with waveform images.
+command-line tool; the `kerf-mcp` MCP server with waveform images, also working live inside the app; FFmpeg as an
+optional decoder.
 
 ## Positioning: what makes Kerf stand out
 
@@ -119,6 +120,13 @@ precisely.
 Size: about 3 days, given Phase 2.
 
 ## Phase 4: MCP inside the running app
+
+**Status:** done. The app hosts the MCP server (opt-in in Preferences) on `127.0.0.1` behind a
+token in a user-only connection file; `kerf-mcp --app` bridges a client's stdio to it. Operations
+run on project snapshots off the UI thread and commit as one "AI: …" undo step only if the user
+hasn't edited meanwhile (else they are redone), and never during a drag. Status-bar indicator with
+Disconnect. `open`/`new` are not offered in the app. Remote connections (open decision 4) are not
+supported.
 
 The standout version: the assistant edits the project you have open, and **you watch the changes
 happen on the timeline**, with every step in normal undo. You can stop it, adjust, or take over.

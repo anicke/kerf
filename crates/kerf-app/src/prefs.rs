@@ -26,6 +26,10 @@ pub struct Prefs {
     pub snap_zero_crossings: bool,
     /// Which FFmpeg decodes what the built-in decoder can't (HE-AAC, AC-3, WMA…).
     pub ffmpeg: kerf_core::decode::FfmpegSetting,
+    /// Let AI assistants edit the open project over MCP (off by default).
+    pub assistant_enabled: bool,
+    /// Folders an assistant may read and write (empty: the home folder).
+    pub assistant_folders: Vec<PathBuf>,
 }
 
 impl Default for Prefs {
@@ -41,6 +45,8 @@ impl Default for Prefs {
             time_format: kerf_core::util::TimeFormat::MinSec,
             snap_zero_crossings: false,
             ffmpeg: Default::default(),
+            assistant_enabled: false,
+            assistant_folders: Vec::new(),
         }
     }
 }

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 kerf-core = { path = "../kerf-core" }
+kerf-mcp = { path = "../kerf-mcp" }
 eframe = "0.37"
 cpal = "0.18"
 rfd = "0.18"

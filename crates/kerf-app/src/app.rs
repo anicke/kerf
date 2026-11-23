@@ -184,6 +184,8 @@ pub struct PrefsDraft {
     ffmpeg_path: String,
     /// What the FFmpeg setting finds, refreshed when it changes.
     ffmpeg_status: Option<(kerf_core::decode::FfmpegSetting, String)>,
+    /// Assistant folders, one per line.
+    assistant_folders: String,
 }
 
 /// Snapshot shown in the Audio Cache dialog.
@@ -299,6 +301,8 @@ pub struct KerfApp {
     pub dialog: Option<Dialog>,
     pub job: Option<Job>,
     pub drag: Option<crate::timeline::Drag>,
+    /// AI assistant access (MCP), when turned on in Preferences.
+    pub assistant: Option<crate::assistant::Assistant>,
     pub meters: [f32; 2],
     pub last_dir: Option<PathBuf>,
     /// Disk cache for decoded audio; `None` falls back to keeping audio in RAM.
@@ -351,6 +355,7 @@ impl KerfApp {
             dialog: None,
             job: None,
             drag: None,
+            assistant: None,
             meters: [0.0; 2],
             last_dir: None,
             cache,
@@ -359,6 +364,10 @@ impl KerfApp {
             screenshot: std::env::var_os("KERF_SCREENSHOT").map(|p| ScreenshotHook {
                 path: p.into(),
                 frames: 0,
+                after: std::env::var("KERF_SCREENSHOT_AFTER")
+                    .ok()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .map(|s| std::time::Instant::now() + std::time::Duration::from_secs_f64(s)),
                 done: Default::default(),
             }),
             prefs: crate::prefs::Prefs::load(),
@@ -368,6 +377,9 @@ impl KerfApp {
         app.player
             .configure(app.prefs.output_device.clone(), app.prefs.buffer_frames);
         kerf_core::decode::configure(&app.prefs.ffmpeg);
+        if app.prefs.assistant_enabled {
+            app.set_assistant(&cc.egui_ctx, true);
+        }
         app.recovery = crate::recovery::Recovery::new(app.prefs.autosave_secs);
         let orphans = app
             .recovery
@@ -426,7 +438,7 @@ impl KerfApp {
     }
 
     /// Drop selection entries that no longer exist (after undo, delete, …).
-    fn validate_selection(&mut self) {
+    pub fn validate_selection(&mut self) {
         let p = self.doc.project();
         let tracks: Vec<TrackId> = self
             .sel
@@ -871,6 +883,13 @@ impl KerfApp {
                     devices: crate::audio::output_devices(),
                     ffmpeg_path,
                     ffmpeg_status: None,
+                    assistant_folders: self
+                        .prefs
+                        .assistant_folders
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                 })));
             }
             GoStart => self.seek(0),
@@ -1016,14 +1035,19 @@ impl KerfApp {
         self.ensure_visible(cursor);
     }
 
-    fn apply_prefs(&mut self, new: crate::prefs::Prefs) {
+    fn apply_prefs(&mut self, ctx: &egui::Context, new: crate::prefs::Prefs) {
         kerf_core::decode::configure(&new.ffmpeg);
+        let assistant_changed = new.assistant_enabled != self.assistant.is_some()
+            || (new.assistant_enabled && new.assistant_folders != self.prefs.assistant_folders);
         self.player
             .configure(new.output_device.clone(), new.buffer_frames);
         if let Some(r) = &mut self.recovery {
             r.set_interval(new.autosave_secs);
         }
         self.prefs = new;
+        if assistant_changed {
+            self.set_assistant(ctx, self.prefs.assistant_enabled);
+        }
         match self.prefs.save() {
             Ok(()) => self.info("Preferences saved"),
             Err(e) => self.error(format!("Could not save preferences: {e}")),
@@ -2043,6 +2067,7 @@ impl KerfApp {
                 ui.label(egui::RichText::new(msg).color(color));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.assistant_indicator(ui);
                 if let Some(note) = &self.player.fallback_note {
                     ui.colored_label(ui.visuals().warn_fg_color, note);
                 }
@@ -2326,7 +2351,7 @@ impl KerfApp {
                     ui.horizontal(|ui| {
                         if ui.button("OK").clicked() {
                             let new = draft.prefs.clone();
-                            run = Some(Box::new(move |app, _| app.apply_prefs(new)));
+                            run = Some(Box::new(move |app, ctx| app.apply_prefs(ctx, new)));
                             close = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -2614,6 +2639,7 @@ impl eframe::App for KerfApp {
         }
 
         self.poll_job(&ctx);
+        self.poll_assistant(&ctx);
         self.shortcuts(&ctx);
 
         // Keep playback in sync with edits and update meters.
@@ -2668,6 +2694,9 @@ impl eframe::App for KerfApp {
 struct ScreenshotHook {
     path: PathBuf,
     frames: u32,
+    /// `KERF_SCREENSHOT_AFTER=<secs>`: wait at least this long (e.g. for an
+    /// assistant driving the app) before taking the screenshot.
+    after: Option<std::time::Instant>,
     done: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -2747,6 +2776,10 @@ impl KerfApp {
                 self.perform(ctx, a);
                 return;
             }
+        }
+        if hook.frames == 20 && hook.after.is_some_and(|t| std::time::Instant::now() < t) {
+            hook.frames = 19; // keep waiting (repaints are requested above)
+            return;
         }
         if hook.frames == 20 {
             let (path, done) = (hook.path.clone(), hook.done.clone());
@@ -3131,6 +3164,8 @@ fn prefs_ui(ui: &mut egui::Ui, draft: &mut PrefsDraft, fallback_note: Option<&st
 
     ui.separator();
     ffmpeg_ui(ui, draft);
+    ui.separator();
+    assistant_ui(ui, draft);
 
     let p = &mut draft.prefs;
     ui.separator();
@@ -3234,6 +3269,57 @@ fn ffmpeg_ui(ui: &mut egui::Ui, draft: &mut PrefsDraft) {
             "The KERF_FFMPEG environment variable overrides this setting.",
         );
     }
+}
+
+/// Preferences: AI assistant access over MCP.
+fn assistant_ui(ui: &mut egui::Ui, draft: &mut PrefsDraft) {
+    ui.heading("Assistant (MCP)");
+    ui.checkbox(
+        &mut draft.prefs.assistant_enabled,
+        "Let AI assistants work on the open project",
+    );
+    ui.label(
+        egui::RichText::new(
+            "Assistants such as Claude connect through kerf-mcp. You see every edit on the \
+             timeline as it happens, each one an undo step labelled \"AI: …\". Only programs \
+             run by you on this computer can connect.",
+        )
+        .weak()
+        .small(),
+    );
+    if !draft.prefs.assistant_enabled {
+        return;
+    }
+    ui.label("Folders it may read and write (one per line; empty: your home folder):");
+    if ui
+        .add(
+            egui::TextEdit::multiline(&mut draft.assistant_folders)
+                .desired_rows(2)
+                .desired_width(f32::INFINITY)
+                .hint_text(
+                    dirs::home_dir()
+                        .map(|h| h.display().to_string())
+                        .unwrap_or_default(),
+                ),
+        )
+        .changed()
+    {
+        draft.prefs.assistant_folders = draft
+            .assistant_folders
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect();
+    }
+    ui.label("Add this to your assistant's MCP configuration:");
+    let config = crate::assistant::client_config();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(&config).monospace().small());
+        if ui.small_button("Copy").clicked() {
+            ui.ctx().copy_text(config.clone());
+        }
+    });
 }
 
 fn p_path(s: &kerf_core::decode::FfmpegSetting) -> String {
