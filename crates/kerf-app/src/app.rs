@@ -277,6 +277,7 @@ pub enum Action {
     ZoomSelection,
     ToggleLoop,
     ToggleSnap,
+    ToggleFollow,
     AudioCache,
     DetectSongs,
     SnapMarkersToSectors,
@@ -913,6 +914,7 @@ impl KerfApp {
             }
             ToggleLoop => self.loop_playback = !self.loop_playback,
             ToggleSnap => self.view.snap = !self.view.snap,
+            ToggleFollow => self.view.follow = !self.view.follow,
             DetectSongs => self.detect_songs(ctx),
             SnapMarkersToSectors => {
                 if self
@@ -1911,147 +1913,333 @@ impl KerfApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        ui.horizontal(|ui| {
-            ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
-            // Items are centred on the row height known when they are added,
-            // so make the row as tall as its tallest item (the position
-            // field, measured last frame) up front, and the buttons too.
-            let field_h = ui
-                .ctx()
-                .data(|d| d.get_temp::<f32>(time_field_height_id("pos")))
-                .unwrap_or_else(|| {
-                    ui.fonts_mut(|f| f.row_height(&egui::FontId::monospace(20.0))) + 10.0
+        let inline = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
+                // Items are centred on the row height known when they are added,
+                // so make the row as tall as its tallest item (the position
+                // field, measured last frame) up front, and the buttons too.
+                let field_h = ui
+                    .ctx()
+                    .data(|d| d.get_temp::<f32>(time_field_height_id("pos")))
+                    .unwrap_or_else(|| {
+                        ui.fonts_mut(|f| f.row_height(&egui::FontId::monospace(20.0))) + 10.0
+                    });
+                ui.set_min_height(field_h.max(crate::icons::MIN_HEIGHT));
+                let playing = self.player.is_playing();
+                use crate::icons::{button, Icon};
+                if button(ui, Icon::GoStart, false, field_h)
+                    .on_hover_text("Go to start (Home)")
+                    .clicked()
+                {
+                    self.perform(&ctx, Action::GoStart);
+                }
+                let icon = if playing { Icon::Stop } else { Icon::Play };
+                if button(ui, icon, false, field_h)
+                    .on_hover_text("Play / Stop (Space)")
+                    .clicked()
+                {
+                    self.perform(&ctx, Action::PlayStop);
+                }
+                if button(ui, Icon::GoEnd, false, field_h)
+                    .on_hover_text("Go to end (End)")
+                    .clicked()
+                {
+                    self.perform(&ctx, Action::GoEnd);
+                }
+                if button(ui, Icon::Loop, self.loop_playback, field_h)
+                    .on_hover_text("Loop playback (L)")
+                    .clicked()
+                {
+                    self.loop_playback = !self.loop_playback;
+                }
+                ui.separator();
+
+                let sr = self.project().sample_rate;
+                let pos = if playing {
+                    self.player.position()
+                } else {
+                    self.cursor
+                };
+                let mut format_changed = false;
+                let r = time_field(
+                    ui,
+                    "pos",
+                    Some(pos),
+                    150.0,
+                    20.0,
+                    &mut self.time_edit,
+                    sr,
+                    &mut self.prefs.time_format,
+                );
+                format_changed |= r.1;
+                if let Some(f) = r.0 {
+                    self.sel.range = None;
+                    self.seek(f);
+                    self.ensure_visible(f);
+                }
+                ui.separator();
+                let range = self.sel.range;
+                let small = 104.0;
+                ui.label(egui::RichText::new("Start").weak());
+                let r = time_field(
+                    ui,
+                    "sel-start",
+                    range.map(|r| r.0),
+                    small,
+                    13.0,
+                    &mut self.time_edit,
+                    sr,
+                    &mut self.prefs.time_format,
+                );
+                format_changed |= r.1;
+                if let Some(f) = r.0 {
+                    let end = range.map_or(self.cursor, |r| r.1);
+                    self.sel.range = (end > f).then_some((f, end));
+                    self.cursor = f;
+                }
+                ui.label(egui::RichText::new("End").weak());
+                let r = time_field(
+                    ui,
+                    "sel-end",
+                    range.map(|r| r.1),
+                    small,
+                    13.0,
+                    &mut self.time_edit,
+                    sr,
+                    &mut self.prefs.time_format,
+                );
+                format_changed |= r.1;
+                if let Some(f) = r.0 {
+                    let start = range.map_or(self.cursor, |r| r.0);
+                    self.sel.range = (f > start).then_some((start, f));
+                    self.cursor = f;
+                }
+                ui.label(egui::RichText::new("Length").weak());
+                let r = time_field(
+                    ui,
+                    "sel-len",
+                    range.map(|r| r.1 - r.0),
+                    small,
+                    13.0,
+                    &mut self.time_edit,
+                    sr,
+                    &mut self.prefs.time_format,
+                );
+                format_changed |= r.1;
+                if let Some(len) = r.0 {
+                    let start = range.map_or(self.cursor, |r| r.0);
+                    self.sel.range = (len > 0).then_some((start, start + len));
+                }
+                if format_changed {
+                    let _ = self.prefs.save();
+                }
+                ui.separator();
+                use crate::icons::tool;
+                let snap = self.view.snap;
+                if tool(
+                    ui,
+                    Icon::Snap,
+                    snap,
+                    true,
+                    field_h,
+                    "Snap to clip edges, markers and cursor (N)",
+                ) {
+                    self.perform(&ctx, Action::ToggleSnap);
+                }
+                if tool(ui, Icon::ZoomIn, false, true, field_h, "Zoom in (+)") {
+                    self.perform(&ctx, Action::ZoomIn);
+                }
+                if tool(ui, Icon::ZoomOut, false, true, field_h, "Zoom out (−)") {
+                    self.perform(&ctx, Action::ZoomOut);
+                }
+                if tool(
+                    ui,
+                    Icon::ZoomFit,
+                    false,
+                    true,
+                    field_h,
+                    "Zoom to fit (Ctrl+F)",
+                ) {
+                    self.perform(&ctx, Action::ZoomFit);
+                }
+
+                // The tool groups go here when they fit beside the meter,
+                // otherwise on a row of their own.
+                const METER_W: f32 = 160.0;
+                let inline = ui.available_width() - METER_W - 24.0 >= self.tool_groups_width(ui);
+                if inline {
+                    ui.separator();
+                    self.tool_groups(ui, &ctx, field_h);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    meter(ui, self.meters, self.project().channels);
                 });
-            ui.set_min_height(field_h.max(crate::transport::MIN_HEIGHT));
-            let playing = self.player.is_playing();
-            use crate::transport::{button, Icon};
-            if button(ui, Icon::GoStart, false, field_h)
-                .on_hover_text("Go to start (Home)")
-                .clicked()
-            {
-                self.perform(&ctx, Action::GoStart);
-            }
-            let icon = if playing { Icon::Stop } else { Icon::Play };
-            if button(ui, icon, false, field_h)
-                .on_hover_text("Play / Stop (Space)")
-                .clicked()
-            {
-                self.perform(&ctx, Action::PlayStop);
-            }
-            if button(ui, Icon::GoEnd, false, field_h)
-                .on_hover_text("Go to end (End)")
-                .clicked()
-            {
-                self.perform(&ctx, Action::GoEnd);
-            }
-            if button(ui, Icon::Loop, self.loop_playback, field_h)
-                .on_hover_text("Loop playback (L)")
-                .clicked()
-            {
-                self.loop_playback = !self.loop_playback;
-            }
-            ui.separator();
+                inline
+            })
+            .inner;
+        if !inline {
+            ui.horizontal(|ui| self.tool_groups(ui, &ctx, crate::icons::MIN_HEIGHT + 4.0));
+        }
+    }
 
-            let sr = self.project().sample_rate;
-            let pos = if playing {
-                self.player.position()
-            } else {
-                self.cursor
-            };
-            let mut format_changed = false;
-            let r = time_field(
-                ui,
-                "pos",
-                Some(pos),
-                150.0,
-                20.0,
-                &mut self.time_edit,
-                sr,
-                &mut self.prefs.time_format,
-            );
-            format_changed |= r.1;
-            if let Some(f) = r.0 {
-                self.sel.range = None;
-                self.seek(f);
-                self.ensure_visible(f);
-            }
-            ui.separator();
-            let range = self.sel.range;
-            let small = 104.0;
-            ui.label(egui::RichText::new("Start").weak());
-            let r = time_field(
-                ui,
-                "sel-start",
-                range.map(|r| r.0),
-                small,
-                13.0,
-                &mut self.time_edit,
-                sr,
-                &mut self.prefs.time_format,
-            );
-            format_changed |= r.1;
-            if let Some(f) = r.0 {
-                let end = range.map_or(self.cursor, |r| r.1);
-                self.sel.range = (end > f).then_some((f, end));
-                self.cursor = f;
-            }
-            ui.label(egui::RichText::new("End").weak());
-            let r = time_field(
-                ui,
-                "sel-end",
-                range.map(|r| r.1),
-                small,
-                13.0,
-                &mut self.time_edit,
-                sr,
-                &mut self.prefs.time_format,
-            );
-            format_changed |= r.1;
-            if let Some(f) = r.0 {
-                let start = range.map_or(self.cursor, |r| r.0);
-                self.sel.range = (f > start).then_some((start, f));
-                self.cursor = f;
-            }
-            ui.label(egui::RichText::new("Length").weak());
-            let r = time_field(
-                ui,
-                "sel-len",
-                range.map(|r| r.1 - r.0),
-                small,
-                13.0,
-                &mut self.time_edit,
-                sr,
-                &mut self.prefs.time_format,
-            );
-            format_changed |= r.1;
-            if let Some(len) = r.0 {
-                let start = range.map_or(self.cursor, |r| r.0);
-                self.sel.range = (len > 0).then_some((start, start + len));
-            }
-            if format_changed {
-                let _ = self.prefs.save();
-            }
-            ui.separator();
-            ui.toggle_value(&mut self.view.snap, "🧲 Snap")
-                .on_hover_text("Snap to clip edges, markers and cursor");
-            if ui.button("🔍+").on_hover_text("Zoom in (+)").clicked() {
-                self.perform(&ctx, Action::ZoomIn);
-            }
-            if ui.button("🔍−").on_hover_text("Zoom out (-)").clicked() {
-                self.perform(&ctx, Action::ZoomOut);
-            }
-            if ui
-                .button("⬌ Fit")
-                .on_hover_text("Zoom to fit (Ctrl+F)")
-                .clicked()
-            {
-                self.perform(&ctx, Action::ZoomFit);
-            }
+    /// Edit, processing and view buttons, in that order.
+    const TOOL_GROUPS: [usize; 3] = [7, 4, 5];
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                meter(ui, self.meters, self.project().channels);
-            });
-        });
+    fn tool_groups_width(&self, ui: &egui::Ui) -> f32 {
+        let sp = ui.spacing().item_spacing.x;
+        let buttons: usize = Self::TOOL_GROUPS.iter().sum();
+        let separators = (Self::TOOL_GROUPS.len() - 1) as f32;
+        buttons as f32 * (crate::icons::WIDTH + sp) + separators * (2.0 * sp + 1.0)
+    }
+
+    fn tool_groups(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, h: f32) {
+        use crate::icons::{tool, Icon};
+        let has_range = self.sel.range.is_some_and(|(a, b)| b > a);
+        let has_tracks = !self.project().tracks.is_empty();
+        let undo = self.doc.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)"));
+        let redo = self
+            .doc
+            .redo_label()
+            .map(|l| format!("Redo {l} (Ctrl+Shift+Z)"));
+        let mut act = None;
+        let mut add = |ui: &mut egui::Ui, icon, on, enabled, tip: &str, a: Action| {
+            if tool(ui, icon, on, enabled, h, tip) {
+                act = Some(a);
+            }
+        };
+
+        // Edit
+        add(
+            ui,
+            Icon::Undo,
+            false,
+            undo.is_some(),
+            undo.as_deref().unwrap_or("Undo (Ctrl+Z)"),
+            Action::Undo,
+        );
+        add(
+            ui,
+            Icon::Redo,
+            false,
+            redo.is_some(),
+            redo.as_deref().unwrap_or("Redo (Ctrl+Shift+Z)"),
+            Action::Redo,
+        );
+        add(
+            ui,
+            Icon::Split,
+            false,
+            has_tracks,
+            "Split at the cursor or selection edges (S)",
+            Action::Split,
+        );
+        add(ui, Icon::Cut, false, has_range, "Cut (Ctrl+X)", Action::Cut);
+        add(
+            ui,
+            Icon::Copy,
+            false,
+            has_range,
+            "Copy (Ctrl+C)",
+            Action::Copy,
+        );
+        add(
+            ui,
+            Icon::Paste,
+            false,
+            self.clipboard.is_some(),
+            "Paste at the cursor (Ctrl+V)",
+            Action::Paste,
+        );
+        add(
+            ui,
+            Icon::Delete,
+            false,
+            has_range || self.sel.clip.is_some(),
+            "Delete the selection and close the gap (Del)",
+            Action::Delete,
+        );
+        ui.separator();
+
+        // Processing
+        add(
+            ui,
+            Icon::FadeIn,
+            false,
+            has_range,
+            "Fade in over the selection (I)",
+            Action::FadeIn,
+        );
+        add(
+            ui,
+            Icon::FadeOut,
+            false,
+            has_range,
+            "Fade out over the selection (O)",
+            Action::FadeOut,
+        );
+        add(
+            ui,
+            Icon::Normalize,
+            false,
+            has_tracks,
+            "Normalize… (Ctrl+M)",
+            Action::Normalize,
+        );
+        add(
+            ui,
+            Icon::Gain,
+            false,
+            has_tracks,
+            "Gain… (Ctrl+G)",
+            Action::Gain,
+        );
+        ui.separator();
+
+        // View
+        add(
+            ui,
+            Icon::Follow,
+            self.view.follow,
+            true,
+            "Follow the playhead while playing",
+            Action::ToggleFollow,
+        );
+        add(
+            ui,
+            Icon::DbScale,
+            self.view.db_scale,
+            true,
+            "Waveform in dB (D)",
+            Action::ToggleDbScale,
+        );
+        add(
+            ui,
+            Icon::ZeroCrossings,
+            self.prefs.snap_zero_crossings,
+            true,
+            "Snap edits to zero crossings",
+            Action::ToggleZeroCrossingSnap,
+        );
+        add(
+            ui,
+            Icon::ZoomSelection,
+            false,
+            has_range,
+            "Zoom to selection (Z)",
+            Action::ZoomSelection,
+        );
+        add(
+            ui,
+            Icon::MarkersPanel,
+            self.prefs.show_markers_panel,
+            true,
+            "Markers panel (Ctrl+Shift+M)",
+            Action::ToggleMarkersPanel,
+        );
+        if let Some(a) = act {
+            self.perform(ctx, a);
+        }
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {

@@ -5,13 +5,13 @@ mod app;
 mod assistant;
 mod audio;
 mod detect_ui;
+mod icons;
 mod jobs;
 mod markers_panel;
 mod nav;
 mod prefs;
 mod recovery;
 mod timeline;
-mod transport;
 
 fn main() -> eframe::Result {
     let files: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
