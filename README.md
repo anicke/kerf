@@ -70,7 +70,8 @@ MCP server so AI assistants can edit alongside you.
   (right-click for the time format: m:ss.mmm, seconds, samples or CD frames mm:ss:ff). Drag the
   selection's edges to adjust it. Double-click between markers to select that song. Optionally snap
   selection edges and splits to zero crossings to avoid clicks (Edit menu; Shift+Z moves the current
-  selection). Vertical zoom (Ctrl+↑/↓ or Alt+wheel) and a dB waveform scale (D) reveal quiet detail.
+  selection). Vertical zoom (Ctrl+↑/↓ or Alt+wheel) and a dB waveform scale (D) reveal quiet detail;
+  each track can be made taller or shorter on its own.
 - **Crash recovery.** Unsaved work is snapshotted every minute (configurable). If Kerf doesn't close
   normally, it offers to recover the work on the next start. Snapshots are tiny: audio is
   referenced, and rendered audio stays in the cache.
@@ -166,6 +167,7 @@ for trying song-start detection.
 | N | Toggle snap | Ctrl+E / Ctrl+Shift+E | Export mix / split at markers |
 | Ctrl+↑ / ↓ | Vertical zoom | D | Waveform in dB |
 | Shift+Z | Selection to zero crossings | Double-click | Select clip, or song between markers |
+| Alt+↑ / ↓ | Taller / shorter tracks (selected, or all) | | |
 
 Space and Shift+Space can be swapped in Preferences.
 
@@ -173,4 +175,7 @@ Mouse: drag in a track to select time (across tracks). Drag a clip's title bar t
 another track. Drag clip edges to trim. Drag the small squares at a clip's top corners to set its fades
 (right-click the clip to change the curve or remove them). Hold Alt to disable snapping. Ctrl+wheel zooms, Shift+wheel
 scrolls. Drag the ruler to select across all tracks. Double-click a marker to rename it.
+Drag the line under a track (in its header or waveform) to change its height; hold Ctrl to resize
+every track, double-click the line to reset it. *View → Fit Tracks to Window* shares the space
+evenly.
 Drag and drop files onto the window.

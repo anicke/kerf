@@ -1,5 +1,6 @@
 //! Application state, actions, menus, dialogs.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,7 +32,10 @@ pub struct View {
     /// Frame at the left edge of the lanes.
     pub scroll: f64,
     pub vscroll: f32,
+    /// Height of tracks without a height of their own.
     pub track_height: f32,
+    /// Tracks resized individually.
+    pub track_heights: HashMap<TrackId, f32>,
     pub follow: bool,
     pub snap: bool,
     /// Lane width in points, measured each frame.
@@ -44,13 +48,67 @@ pub struct View {
     pub db_scale: bool,
 }
 
+pub const DEFAULT_TRACK_H: f32 = 120.0;
+pub const MIN_TRACK_H: f32 = 40.0;
+pub const MAX_TRACK_H: f32 = 1200.0;
+
+impl View {
+    pub fn height_of(&self, id: TrackId) -> f32 {
+        self.track_heights
+            .get(&id)
+            .copied()
+            .unwrap_or(self.track_height)
+    }
+
+    pub fn set_height(&mut self, id: TrackId, h: f32) {
+        self.track_heights
+            .insert(id, h.clamp(MIN_TRACK_H, MAX_TRACK_H));
+    }
+
+    /// Top of each track, measured from the top of the first, followed by
+    /// the total height of all tracks (so `tops.len() == tracks + 1`).
+    pub fn track_tops(&self, p: &Project) -> Vec<f32> {
+        let mut tops = Vec::with_capacity(p.tracks.len() + 1);
+        let mut y = 0.0;
+        tops.push(y);
+        for t in &p.tracks {
+            y += self.height_of(t.id);
+            tops.push(y);
+        }
+        tops
+    }
+
+    /// Scale the height of the given tracks.
+    pub fn resize_tracks(&mut self, ids: &[TrackId], factor: f32) {
+        for &id in ids {
+            self.set_height(id, self.height_of(id) * factor);
+        }
+    }
+
+    /// Give every track the same height, filling the visible track area.
+    pub fn fit_tracks(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        self.track_heights.clear();
+        self.track_height = (self.lane_height / n as f32).clamp(MIN_TRACK_H, MAX_TRACK_H);
+        self.vscroll = 0.0;
+    }
+
+    pub fn reset_track_heights(&mut self) {
+        self.track_heights.clear();
+        self.track_height = DEFAULT_TRACK_H;
+    }
+}
+
 impl Default for View {
     fn default() -> Self {
         Self {
             spp: 512.0,
             scroll: 0.0,
             vscroll: 0.0,
-            track_height: 120.0,
+            track_height: DEFAULT_TRACK_H,
+            track_heights: HashMap::new(),
             follow: true,
             snap: true,
             lane_width: 1000.0,
@@ -200,6 +258,10 @@ pub enum Action {
     VZoomIn,
     VZoomOut,
     VZoomReset,
+    TallerTracks,
+    ShorterTracks,
+    FitTracks,
+    ResetTrackHeights,
     ToggleDbScale,
     GoStart,
     GoEnd,
@@ -722,13 +784,12 @@ impl KerfApp {
                         self.sel.tracks = vec![id];
                     }
                     // Keep the track in view.
-                    let top = i as f32 * self.view.track_height;
+                    let tops = self.view.track_tops(self.project());
+                    let (top, bottom) = (tops[i], tops[i + 1]);
                     if top < self.view.vscroll {
                         self.view.vscroll = top;
-                    } else if top + self.view.track_height
-                        > self.view.vscroll + self.view.lane_height
-                    {
-                        self.view.vscroll = top + self.view.track_height - self.view.lane_height;
+                    } else if bottom > self.view.vscroll + self.view.lane_height {
+                        self.view.vscroll = (bottom - self.view.lane_height).min(top);
                     }
                 }
             }
@@ -782,6 +843,17 @@ impl KerfApp {
             VZoomIn => self.view.vzoom = (self.view.vzoom * 2.0).min(256.0),
             VZoomOut => self.view.vzoom = (self.view.vzoom / 2.0).max(1.0),
             VZoomReset => self.view.vzoom = 1.0,
+            TallerTracks | ShorterTracks => {
+                let ids = if self.sel.tracks.is_empty() {
+                    self.project().all_track_ids()
+                } else {
+                    self.sel.tracks.clone()
+                };
+                let factor = if action == TallerTracks { 1.25 } else { 0.8 };
+                self.view.resize_tracks(&ids, factor);
+            }
+            FitTracks => self.view.fit_tracks(self.project().tracks.len()),
+            ResetTrackHeights => self.view.reset_track_heights(),
             ToggleDbScale => self.view.db_scale = !self.view.db_scale,
             Album => self.dialog = Some(Dialog::Album(Box::default())),
             Preferences => {
@@ -1354,6 +1426,8 @@ impl KerfApp {
             (cmd, Key::ArrowLeft, Action::PrevEditPoint),
             (cmd, Key::ArrowRight, Action::NextEditPoint),
             (cmd, Key::Comma, Action::Preferences),
+            (Modifiers::ALT, Key::ArrowUp, Action::TallerTracks),
+            (Modifiers::ALT, Key::ArrowDown, Action::ShorterTracks),
             (cmd, Key::ArrowUp, Action::VZoomIn),
             (cmd, Key::ArrowDown, Action::VZoomOut),
             (cmd_shift, Key::Z, Action::Redo),
@@ -1740,6 +1814,23 @@ impl KerfApp {
                     &mut act,
                 );
                 item(ui, "Reset Vertical Zoom", "", Action::VZoomReset, &mut act);
+                ui.separator();
+                item(ui, "Taller Tracks", "Alt+↑", Action::TallerTracks, &mut act);
+                item(
+                    ui,
+                    "Shorter Tracks",
+                    "Alt+↓",
+                    Action::ShorterTracks,
+                    &mut act,
+                );
+                item(ui, "Fit Tracks to Window", "", Action::FitTracks, &mut act);
+                item(
+                    ui,
+                    "Reset Track Heights",
+                    "",
+                    Action::ResetTrackHeights,
+                    &mut act,
+                );
                 ui.checkbox(&mut self.view.db_scale, "Waveform in dB (D)");
                 ui.menu_button("Time Format", |ui| {
                     for f in kerf_core::util::TimeFormat::ALL {
@@ -1761,10 +1852,6 @@ impl KerfApp {
                 {
                     let _ = self.prefs.save();
                 }
-                ui.add(
-                    egui::Slider::new(&mut self.view.track_height, 60.0..=400.0)
-                        .text("Track height"),
-                );
             });
             ui.menu_button("Help", |ui| {
                 item(ui, "About Kerf", "", Action::About, &mut act)

@@ -108,7 +108,8 @@ struct Geo {
     spp: f64,
     scroll: f64,
     vscroll: f32,
-    th: f32,
+    /// Top of each track from the top of the first, then the total height.
+    tops: Vec<f32>,
     /// Amplitude zoom and dB scale for waveforms.
     vzoom: f32,
     db: bool,
@@ -142,27 +143,35 @@ impl Geo {
         self.frame_f(x).max(0.0).round() as Frame
     }
 
+    /// Screen y of the top of track `i` (`i == tracks` gives the bottom of the last).
     fn row_top(&self, i: usize) -> f32 {
-        self.lanes.top() + i as f32 * self.th - self.vscroll
+        let y = self
+            .tops
+            .get(i)
+            .or(self.tops.last())
+            .copied()
+            .unwrap_or(0.0);
+        self.lanes.top() + y - self.vscroll
     }
 
     fn row(&self, i: usize) -> Rect {
-        let top = self.row_top(i);
         Rect::from_min_max(
-            pos2(self.lanes.left(), top),
-            pos2(self.lanes.right(), top + self.th),
+            pos2(self.lanes.left(), self.row_top(i)),
+            pos2(self.lanes.right(), self.row_top(i + 1)),
         )
     }
 
+    /// Index of the track at screen `y`, or `None` above/below all tracks.
+    /// (`n` is the track count, kept for symmetry with the callers.)
     fn track_at(&self, y: f32, n: usize) -> Option<usize> {
-        let i = ((y - self.lanes.top() + self.vscroll) / self.th).floor();
-        (i >= 0.0 && (i as usize) < n).then_some(i as usize)
+        let rel = y - self.lanes.top() + self.vscroll;
+        let i = self.tops.partition_point(|&t| t <= rel);
+        (rel >= 0.0 && i >= 1 && i - 1 < n).then(|| i - 1)
     }
 
     fn track_at_clamped(&self, y: f32, n: usize) -> usize {
-        let i = ((y - self.lanes.top() + self.vscroll) / self.th)
-            .floor()
-            .max(0.0) as usize;
+        let rel = y - self.lanes.top() + self.vscroll;
+        let i = self.tops.partition_point(|&t| t <= rel).saturating_sub(1);
         i.min(n.saturating_sub(1))
     }
 }
@@ -290,7 +299,8 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
             app.view.vscroll -= scroll_delta.y;
         }
     }
-    let max_v = (n_tracks as f32 * app.view.track_height - lanes.height()).max(0.0);
+    let tops = app.view.track_tops(app.project());
+    let max_v = (tops[n_tracks] - lanes.height()).max(0.0);
     app.view.vscroll = app.view.vscroll.clamp(0.0, max_v);
 
     // Follow the playhead by pages.
@@ -316,7 +326,7 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
         spp: app.view.spp,
         scroll: app.view.scroll,
         vscroll: app.view.vscroll,
-        th: app.view.track_height,
+        tops,
         vzoom: app.view.vzoom,
         db: app.view.db_scale,
     };
@@ -498,6 +508,7 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
         sb_resp.hovered() || sb_resp.dragged(),
     );
     track_headers(app, ui, p, &geo);
+    track_resize_handles(app, ui, p, &geo);
 
     // Header column corner.
     let corner = Rect::from_min_max(full.left_top(), pos2(lanes.left(), lanes.top()));
@@ -1326,6 +1337,54 @@ fn draw_clip_overlay(painter: &egui::Painter, c: &Clip, row: Rect, geo: &Geo, se
     }
 }
 
+/// How far above a track's bottom edge the resize handle reaches.
+const RESIZE_GRAB: f32 = 5.0;
+
+/// Drag the line under a track (in its header or lane) to change its height;
+/// with Ctrl/Cmd held every track follows. Double-click resets it.
+fn track_resize_handles(app: &mut KerfApp, ui: &mut egui::Ui, p: &Project, geo: &Geo) {
+    let area = geo.headers.union(geo.lanes);
+    for (i, t) in p.tracks.iter().enumerate() {
+        let bottom = geo.row_top(i + 1);
+        let rect = Rect::from_min_max(
+            pos2(area.left(), bottom - RESIZE_GRAB),
+            pos2(area.right(), bottom + 1.0),
+        )
+        .intersect(area);
+        if !rect.is_positive() {
+            continue;
+        }
+        let id = t.id;
+        let resp = ui.interact(
+            rect,
+            Id::unique(("track-resize", id.0)),
+            Sense::click_and_drag(),
+        );
+        let resp = resp
+            .on_hover_text("Drag to resize the track (Ctrl: all tracks) · double-click to reset");
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(CursorIcon::ResizeVertical);
+            ui.painter().with_clip_rect(area).hline(
+                area.x_range(),
+                bottom - 1.0,
+                Stroke::new(2.0, Color32::from_rgb(90, 150, 220)),
+            );
+        }
+        if resp.dragged() {
+            let h = app.view.height_of(id) + resp.drag_delta().y;
+            if ui.input(|i| i.modifiers.command) {
+                app.view.track_heights.clear();
+                app.view.track_height = h.clamp(crate::app::MIN_TRACK_H, crate::app::MAX_TRACK_H);
+            } else {
+                app.view.set_height(id, h);
+            }
+        }
+        if resp.double_clicked() {
+            app.view.track_heights.remove(&id);
+        }
+    }
+}
+
 fn track_headers(app: &mut KerfApp, ui: &mut egui::Ui, p: &Project, geo: &Geo) {
     let visuals = ui.visuals().clone();
     ui.painter()
@@ -1333,10 +1392,9 @@ fn track_headers(app: &mut KerfApp, ui: &mut egui::Ui, p: &Project, geo: &Geo) {
         .rect_filled(geo.headers, 0.0, visuals.panel_fill);
 
     for (i, t) in p.tracks.iter().enumerate() {
-        let top = geo.row_top(i);
         let rect = Rect::from_min_max(
-            pos2(geo.headers.left(), top),
-            pos2(geo.headers.right(), top + geo.th),
+            pos2(geo.headers.left(), geo.row_top(i)),
+            pos2(geo.headers.right(), geo.row_top(i + 1)),
         );
         if !rect.intersects(geo.headers) {
             continue;
@@ -1501,5 +1559,55 @@ fn track_headers(app: &mut KerfApp, ui: &mut egui::Ui, p: &Project, geo: &Geo) {
                     Ok(())
                 });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn geo(tops: Vec<f32>, vscroll: f32) -> Geo {
+        let r = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0));
+        let lanes = Rect::from_min_max(pos2(200.0, 30.0), pos2(1000.0, 500.0));
+        Geo {
+            ruler: r,
+            headers: r,
+            lanes,
+            scrollbar: r,
+            spp: 1.0,
+            scroll: 0.0,
+            vscroll,
+            tops,
+            vzoom: 1.0,
+            db: false,
+        }
+    }
+
+    #[test]
+    fn rows_follow_individual_track_heights() {
+        // Three tracks: 100, 300 and 50 points tall.
+        let g = geo(vec![0.0, 100.0, 400.0, 450.0], 0.0);
+        assert_eq!(g.row(1).top(), 130.0);
+        assert_eq!(g.row(1).height(), 300.0);
+        assert_eq!(g.row_top(3), 480.0, "bottom of the last track");
+        assert_eq!(g.track_at(29.0, 3), None);
+        assert_eq!(g.track_at(30.0, 3), Some(0));
+        assert_eq!(g.track_at(129.9, 3), Some(0));
+        assert_eq!(g.track_at(130.0, 3), Some(1));
+        assert_eq!(g.track_at(479.0, 3), Some(2));
+        assert_eq!(g.track_at(480.0, 3), None);
+        assert_eq!(g.track_at_clamped(0.0, 3), 0);
+        assert_eq!(g.track_at_clamped(900.0, 3), 2);
+
+        let scrolled = geo(vec![0.0, 100.0, 400.0, 450.0], 150.0);
+        assert_eq!(scrolled.track_at(30.0, 3), Some(1));
+        assert_eq!(scrolled.row_top(1), -20.0);
+    }
+
+    #[test]
+    fn no_tracks() {
+        let g = geo(vec![0.0], 0.0);
+        assert_eq!(g.track_at(50.0, 0), None);
+        assert_eq!(g.track_at_clamped(50.0, 0), 0);
     }
 }
