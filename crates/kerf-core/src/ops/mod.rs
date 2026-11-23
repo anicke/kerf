@@ -120,9 +120,11 @@ impl Session {
                     .doc
                     .apply("Import", |p| session::import_file(p, &path, at))?;
                 let p = self.project();
+                let warning = crate::io::decode_limitation(&path)
+                    .map_or_else(String::new, |w| format!(". Warning: {w}"));
                 Ok(Response {
                     summary: format!(
-                        "Imported {} as track {} ({}, {} Hz, {} ch)",
+                        "Imported {} as track {} ({}, {} Hz, {} ch){warning}",
                         path.display(),
                         tid.0,
                         crate::util::format_time(
@@ -638,8 +640,12 @@ impl Session {
             self.source_name = path.file_stem().map(|s| s.to_string_lossy().into_owned());
         }
         let p = self.project();
+        let warning = (!is_project)
+            .then(|| crate::io::decode_limitation(path))
+            .flatten()
+            .map_or_else(String::new, |w| format!(". Warning: {w}"));
         Ok(done(format!(
-            "Opened {}: {} track(s), {} markers, {}, {} Hz, {} ch",
+            "Opened {}: {} track(s), {} markers, {}, {} Hz, {} ch{warning}",
             path.display(),
             p.tracks.len(),
             p.markers.len(),

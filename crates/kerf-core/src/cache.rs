@@ -26,6 +26,10 @@ use crate::store::SourceAudio;
 
 /// Bump when the on-disk format changes; old entries are then ignored.
 const CACHE_VERSION: u32 = 1;
+/// Part of every decoded file's key: bump when decoding changes what a file
+/// decodes to, so stale entries are never reused (they age out by pruning).
+/// 2: sample rate taken from the decoded audio, not the container (HE-AAC).
+const DECODER_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct Meta {
@@ -450,6 +454,7 @@ fn file_key(path: &Path, rate: u32) -> Result<String> {
     h.write(&mtime.as_nanos().to_le_bytes());
     h.write(&rate.to_le_bytes());
     h.write(&CACHE_VERSION.to_le_bytes());
+    h.write(&DECODER_VERSION.to_le_bytes());
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())

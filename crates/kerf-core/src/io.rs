@@ -29,9 +29,13 @@ pub struct StreamDecoder {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
+    /// The rate of the decoded samples (which may differ from the header's).
     sample_rate: u32,
+    /// The rate the container states.
+    header_rate: Option<u32>,
     channels: usize,
-    total_frames: Option<u64>,
+    /// Length in frames at the container's rate.
+    header_frames: Option<u64>,
     interleaved: Vec<f32>,
     planar: Vec<Vec<f32>>,
     /// First chunk, decoded during `open` to learn the stream format.
@@ -63,7 +67,7 @@ impl StreamDecoder {
             .default_track(TrackType::Audio)
             .ok_or_else(|| derr("no audio track".into()))?;
         let track_id = track.id;
-        let total_frames = track.num_frames;
+        let header_frames = track.num_frames;
         let params = track
             .codec_params
             .as_ref()
@@ -78,9 +82,13 @@ impl StreamDecoder {
             format,
             decoder,
             track_id,
-            sample_rate: params.sample_rate.unwrap_or(0),
+            // Taken from the first decoded packet: containers can disagree
+            // with the codec (HE-AAC states the full rate, but a decoder
+            // without SBR delivers half of it).
+            sample_rate: 0,
+            header_rate: params.sample_rate.filter(|&r| r > 0),
             channels: params.channels.as_ref().map_or(0, |c| c.count()),
-            total_frames,
+            header_frames,
             interleaved: Vec::new(),
             planar: Vec::new(),
             pending: false,
@@ -102,9 +110,35 @@ impl StreamDecoder {
         self.channels
     }
 
-    /// Total length in frames, if the container states it (for progress).
+    /// Total length in decoded frames, if the container states it (for progress).
     pub fn total_frames(&self) -> Option<u64> {
-        self.total_frames
+        let frames = self.header_frames?;
+        Some(match self.header_rate {
+            Some(h) if h != self.sample_rate => {
+                (frames as u128 * self.sample_rate as u128 / h as u128) as u64
+            }
+            _ => frames,
+        })
+    }
+
+    /// A warning when the file holds more than can be decoded: the
+    /// container states a higher rate than the decoder delivers. This is
+    /// HE-AAC (AAC with SBR), whose upper frequencies are reconstructed by
+    /// an extension the built-in decoder doesn't support; the audio plays
+    /// at the right speed but lacks content above half the decoded rate.
+    pub fn limitation(&self) -> Option<String> {
+        let header = self.header_rate?;
+        (header > self.sample_rate).then(|| {
+            format!(
+                "{} is HE-AAC: decoded at {} Hz instead of {} Hz, so frequencies above {:.1} kHz are missing",
+                self.path
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
+                self.sample_rate,
+                header,
+                self.sample_rate as f64 / 2000.0
+            )
+        })
     }
 
     fn derr(&self, message: String) -> Error {
@@ -145,6 +179,8 @@ impl StreamDecoder {
             let nch = spec.channels().count().max(1);
             if self.sample_rate == 0 {
                 self.sample_rate = spec.rate();
+            } else if spec.rate() != self.sample_rate {
+                return Err(self.derr("sample rate changed mid-stream".into()));
             }
             if self.channels == 0 {
                 self.channels = nch;
@@ -176,6 +212,12 @@ impl StreamDecoder {
         };
         Ok(has.then_some(&self.planar[..]))
     }
+}
+
+/// What can't be decoded faithfully from `path`, if anything (see
+/// [`StreamDecoder::limitation`]). Cheap: decodes only the first packet.
+pub fn decode_limitation(path: &Path) -> Option<String> {
+    StreamDecoder::open(path).ok()?.limitation()
 }
 
 /// Decode an entire audio file to 32-bit float at its native sample rate.
@@ -504,5 +546,46 @@ mod tests {
         assert!(back.channel(0)[0] > 0.999);
         assert_eq!(back.channel(0)[1], -1.0);
         assert!(back.channel(0)[2].abs() <= 1.0 / 32768.0 + 1e-9);
+    }
+
+    #[test]
+    fn rate_and_length_come_from_the_decoded_audio() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.wav");
+        write_wav(
+            &path,
+            &AudioBuffer::new(24_000, vec![vec![0.25; 24_000]; 2]),
+            ExportSettings::default(),
+        )
+        .unwrap();
+        let dec = StreamDecoder::open(&path).unwrap();
+        assert_eq!(dec.sample_rate(), 24_000);
+        assert_eq!(dec.total_frames(), Some(24_000));
+        assert_eq!(dec.limitation(), None);
+        assert_eq!(decode_limitation(&path), None);
+    }
+
+    /// HE-AAC (AAC + SBR): the container states twice the rate the decoder
+    /// delivers. Decoding must use the delivered rate (correct speed and
+    /// length) and say what's missing. Needs a real file, e.g. a radio
+    /// recording: `KERF_HE_AAC_SAMPLE=show.m4a cargo test -- --ignored he_aac`.
+    #[test]
+    #[ignore]
+    fn he_aac_plays_at_the_right_speed() {
+        let path = std::env::var_os("KERF_HE_AAC_SAMPLE").expect("set KERF_HE_AAC_SAMPLE");
+        let path = Path::new(&path);
+        let mut dec = StreamDecoder::open(path).unwrap();
+        let rate = dec.sample_rate();
+        let expected = dec.total_frames().unwrap();
+        let mut frames = 0u64;
+        while let Some(c) = dec.next_chunk().unwrap() {
+            frames += c[0].len() as u64;
+        }
+        // The decoded length matches the container's duration (to a frame of 2048).
+        assert!(
+            frames.abs_diff(expected) <= 2048,
+            "{frames} vs {expected} at {rate} Hz"
+        );
+        assert!(dec.limitation().unwrap().contains("HE-AAC"));
     }
 }

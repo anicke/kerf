@@ -14,6 +14,8 @@ pub struct Prepared {
     pub name: String,
     pub audio: SourceAudio,
     pub peaks: PeakCache,
+    /// What couldn't be decoded faithfully (e.g. HE-AAC's upper band).
+    pub limitation: Option<String>,
 }
 
 pub enum JobDone {

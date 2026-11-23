@@ -1150,11 +1150,13 @@ impl KerfApp {
                                 .file_stem()
                                 .map(|s| s.to_string_lossy().into_owned())
                                 .unwrap_or_default();
+                            let limitation = kerf_core::io::decode_limitation(&path);
                             out.push(Ok(Prepared {
                                 path,
                                 name,
                                 audio,
                                 peaks,
+                                limitation,
                             }));
                         }
                         Err(kerf_core::Error::Cancelled) => break,
@@ -1318,6 +1320,8 @@ impl KerfApp {
                 }
                 if !ok.is_empty() {
                     let n = ok.len();
+                    let warnings: Vec<String> =
+                        ok.iter().filter_map(|p| p.limitation.clone()).collect();
                     let was_empty = self.project().is_empty();
                     let added = self.edit("Import", move |p| {
                         if p.is_empty() {
@@ -1346,7 +1350,14 @@ impl KerfApp {
                             self.perform(ctx, Action::ZoomFit);
                         }
                         self.sel.tracks = ids;
-                        self.info(format!("Imported {n} file(s)"));
+                        if warnings.is_empty() {
+                            self.info(format!("Imported {n} file(s)"));
+                        } else {
+                            self.error(format!(
+                                "Imported {n} file(s). Warning: {}",
+                                warnings.join("; ")
+                            ));
+                        }
                     }
                 }
                 if !errors.is_empty() {
