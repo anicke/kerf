@@ -39,6 +39,7 @@ pub enum Icon {
     ZoomFit,
     ZoomSelection,
     Follow,
+    Center,
     DbScale,
     ZeroCrossings,
     MarkersPanel,
@@ -354,6 +355,17 @@ fn paint(p: &egui::Painter, c: Pos2, icon: Icon, color: Color32, bg: Color32) {
             ));
             p.add(line(vec![pos2(c.x - 1.0, c.y), pos2(c.x + 5.0, c.y)], 1.6));
             p.add(fill(triangle(pos2(c.x + 4.5, c.y), 3.5, true)));
+        }
+        Icon::Center => {
+            // The playhead fixed in the middle, the audio moving past it.
+            p.add(line(vec![pos2(c.x, c.y - 7.0), pos2(c.x, c.y + 7.0)], 1.6));
+            for d in [-1.0, 1.0] {
+                p.add(fill(vec![
+                    pos2(c.x + d * 7.0, c.y - 3.5),
+                    pos2(c.x + d * 3.0, c.y),
+                    pos2(c.x + d * 7.0, c.y + 3.5),
+                ]));
+            }
         }
         Icon::DbScale => {
             p.text(

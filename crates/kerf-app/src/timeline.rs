@@ -305,14 +305,32 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
     let max_v = (tops[n_tracks] - lanes.height()).max(0.0);
     app.view.vscroll = app.view.vscroll.clamp(0.0, max_v);
 
-    // Follow the playhead by pages.
-    if app.player.is_playing() && app.view.follow && app.drag.is_none() {
+    // Follow the playhead: by pages, or keeping it centred.
+    if app.player.is_playing() && app.drag.is_none() {
+        use crate::prefs::FollowMode;
         let ph = app.player.position() as f64;
         let visible = app.view.visible_frames();
-        if ph > app.view.scroll + visible * 0.98 || ph < app.view.scroll {
-            app.view.scroll = (ph - visible * 0.02).max(0.0);
+        match app.prefs.follow {
+            FollowMode::Page => {
+                if ph > app.view.scroll + visible * 0.98 || ph < app.view.scroll {
+                    app.view.scroll = ph - visible * 0.02;
+                }
+            }
+            // Near the start and end the clamp lets the playhead move instead.
+            FollowMode::Center => app.view.scroll = ph - visible * 0.5,
+            FollowMode::Off => {}
+        }
+        app.view.clamp();
+        if app.prefs.follow == FollowMode::Center {
+            ctx.request_repaint();
         }
     }
+
+    // Draw at whole physical pixels: while scrolling (smoothly, or keeping
+    // the playhead centred) every waveform column then keeps its shape and
+    // only moves, instead of shimmering as its samples shift.
+    let px_frames = app.view.spp / ctx.pixels_per_point() as f64;
+    let draw_scroll = (app.view.scroll / px_frames).round() * px_frames;
 
     let geo = Geo {
         ruler: Rect::from_min_max(
@@ -326,7 +344,7 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
         lanes,
         scrollbar: Rect::from_min_max(pos2(lanes.left(), lanes.bottom()), full.right_bottom()),
         spp: app.view.spp,
-        scroll: app.view.scroll,
+        scroll: draw_scroll,
         vscroll: app.view.vscroll,
         tops,
         vzoom: app.view.vzoom,
@@ -1199,13 +1217,17 @@ fn draw_clip(painter: &egui::Painter, p: &Project, c: &Clip, row: Rect, geo: &Ge
     }
 
     if geo.spp >= 1.0 {
+        // One column per physical pixel, on a fixed grid of the timeline
+        // (column k covers frames k·w .. (k+1)·w), so scrolling moves the
+        // columns without changing what each one shows.
+        let ppp = painter.ctx().pixels_per_point();
+        let col_w = 1.0 / ppp;
+        let fpc = geo.spp / ppp as f64;
         let mut mesh = Mesh::default();
-        let mut px = vis0;
-        while px < vis1 {
-            let s0 = (geo.frame_f(px) - c.position as f64 + c.source_start as f64)
-                .max(c.source_start as f64);
-            let s1 = (geo.frame_f(px + 1.0) - c.position as f64 + c.source_start as f64)
-                .min(c.source_end() as f64);
+        for (px, f_a) in wave_columns(geo, vis0, vis1, ppp) {
+            let s0 = (f_a - c.position as f64 + c.source_start as f64).max(c.source_start as f64);
+            let s1 =
+                (f_a + fpc - c.position as f64 + c.source_start as f64).min(c.source_end() as f64);
             if s1 > s0 {
                 let i0 = s0.floor() as usize;
                 let i1 = (s1.ceil() as usize).max(i0 + 1);
@@ -1227,12 +1249,11 @@ fn draw_clip(painter: &egui::Painter, p: &Project, c: &Clip, row: Rect, geo: &Ge
                         color
                     };
                     mesh.add_colored_rect(
-                        Rect::from_min_max(pos2(px, y_hi), pos2(px + 1.0, y_lo)),
+                        Rect::from_min_max(pos2(px, y_hi), pos2(px + col_w, y_lo)),
                         col,
                     );
                 }
             }
-            px += 1.0;
         }
         painter.add(Shape::mesh(mesh));
     } else {
@@ -1270,6 +1291,24 @@ fn draw_clip(painter: &egui::Painter, p: &Project, c: &Clip, row: Rect, geo: &Ge
         Stroke::new(1.0, Color32::from_gray(70)),
         egui::StrokeKind::Inside,
     );
+}
+
+/// Waveform columns between screen x `vis0` and `vis1`: one per physical
+/// pixel, as (x, first timeline frame), on a fixed grid of the timeline so
+/// that scrolling moves columns without changing what they show.
+fn wave_columns(
+    geo: &Geo,
+    vis0: f32,
+    vis1: f32,
+    ppp: f32,
+) -> impl Iterator<Item = (f32, f64)> + '_ {
+    let fpc = geo.spp / ppp as f64;
+    let k0 = (geo.frame_f(vis0) / fpc).floor() as i64;
+    let k1 = (geo.frame_f(vis1) / fpc).ceil() as i64;
+    (k0..k1).map(move |k| {
+        let f = k as f64 * fpc;
+        ((geo.x(f) * ppp).round() / ppp, f)
+    })
 }
 
 /// Fade envelope, fade handles and selection outline, drawn above all clip bodies.
@@ -1603,6 +1642,38 @@ mod tests {
         let scrolled = geo(vec![0.0, 100.0, 400.0, 450.0], 150.0);
         assert_eq!(scrolled.track_at(30.0, 3), Some(1));
         assert_eq!(scrolled.row_top(1), -20.0);
+    }
+
+    #[test]
+    fn scrolling_moves_waveform_columns_without_changing_them() {
+        let ppp = 1.28;
+        let spp = 437.0;
+        let columns = |view_scroll: f64| {
+            // As in `show`: draw at whole physical pixels.
+            let px_frames = spp / ppp as f64;
+            let mut g = geo(vec![0.0, 100.0], 0.0);
+            g.spp = spp;
+            g.scroll = (view_scroll / px_frames).round() * px_frames;
+            wave_columns(&g, 300.0, 900.0, ppp).collect::<Vec<_>>()
+        };
+        let base = columns(1_000_000.0);
+        // Smooth scrolling lands on arbitrary fractions of a pixel.
+        for d in [0.13, 0.5, 1.0, 7.77, 123.4] {
+            let moved = columns(1_000_000.0 + d * spp);
+            let by: std::collections::HashMap<u64, f32> =
+                moved.iter().map(|&(x, f)| (f.to_bits(), x)).collect();
+            let mut shifts = Vec::new();
+            for (x, f) in &base {
+                if let Some(x2) = by.get(&f.to_bits()) {
+                    // Same column (same frames), moved by whole physical pixels.
+                    let shift = (x - x2) * ppp;
+                    assert!((shift - shift.round()).abs() < 1e-3, "{shift}");
+                    shifts.push(shift.round() as i64);
+                }
+            }
+            assert!(shifts.len() > 500, "most columns stay in view");
+            assert!(shifts.windows(2).all(|w| w[0] == w[1]), "all move together");
+        }
     }
 
     #[test]

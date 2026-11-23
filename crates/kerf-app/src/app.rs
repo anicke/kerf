@@ -36,7 +36,6 @@ pub struct View {
     pub track_height: f32,
     /// Tracks resized individually.
     pub track_heights: HashMap<TrackId, f32>,
-    pub follow: bool,
     pub snap: bool,
     /// Lane width in points, measured each frame.
     pub lane_width: f32,
@@ -112,7 +111,6 @@ impl Default for View {
             vscroll: 0.0,
             track_height: DEFAULT_TRACK_H,
             track_heights: HashMap::new(),
-            follow: true,
             snap: true,
             lane_width: 1000.0,
             lane_height: 400.0,
@@ -373,7 +371,8 @@ pub enum Action {
     ZoomSelection,
     ToggleLoop,
     ToggleSnap,
-    ToggleFollow,
+    FollowPage,
+    FollowCenter,
     AudioCache,
     DetectSongs,
     SnapMarkersToSectors,
@@ -1001,7 +1000,20 @@ impl KerfApp {
             }
             ToggleLoop => self.loop_playback = !self.loop_playback,
             ToggleSnap => self.view.snap = !self.view.snap,
-            ToggleFollow => self.view.follow = !self.view.follow,
+            FollowPage | FollowCenter => {
+                use crate::prefs::FollowMode;
+                let mode = if action == FollowPage {
+                    FollowMode::Page
+                } else {
+                    FollowMode::Center
+                };
+                // Clicking the active mode turns following off.
+                self.set_follow(if self.prefs.follow == mode {
+                    FollowMode::Off
+                } else {
+                    mode
+                });
+            }
             DetectSongs => self.detect_songs(ctx),
             SnapMarkersToSectors => {
                 if self
@@ -1124,6 +1136,11 @@ impl KerfApp {
             }
             _ => {}
         }
+    }
+
+    pub fn set_follow(&mut self, mode: crate::prefs::FollowMode) {
+        self.prefs.follow = mode;
+        let _ = self.prefs.save();
     }
 
     /// Tell the view how long the material is, so zoom and scroll stay
@@ -2012,7 +2029,19 @@ impl KerfApp {
                 });
                 ui.separator();
                 ui.checkbox(&mut self.view.snap, "Snap to edges & markers");
-                ui.checkbox(&mut self.view.follow, "Follow playhead");
+                ui.label("While playing:");
+                {
+                    use crate::prefs::FollowMode;
+                    for (mode, label) in [
+                        (FollowMode::Off, "Don't follow the playhead"),
+                        (FollowMode::Page, "Follow the playhead by pages"),
+                        (FollowMode::Center, "Keep the playhead centred"),
+                    ] {
+                        if ui.radio(self.prefs.follow == mode, label).clicked() {
+                            self.set_follow(mode);
+                        }
+                    }
+                }
                 if ui
                     .checkbox(
                         &mut self.prefs.show_markers_panel,
@@ -2205,7 +2234,7 @@ impl KerfApp {
     }
 
     /// Edit, processing and view buttons, in that order.
-    const TOOL_GROUPS: [usize; 3] = [7, 4, 5];
+    const TOOL_GROUPS: [usize; 3] = [7, 4, 6];
 
     fn tool_groups_width(&self, ui: &egui::Ui) -> f32 {
         let sp = ui.spacing().item_spacing.x;
@@ -2318,14 +2347,26 @@ impl KerfApp {
         ui.separator();
 
         // View
-        add(
-            ui,
-            Icon::Follow,
-            self.view.follow,
-            true,
-            "Follow the playhead while playing",
-            Action::ToggleFollow,
-        );
+        {
+            use crate::prefs::FollowMode;
+            let follow = self.prefs.follow;
+            add(
+                ui,
+                Icon::Follow,
+                follow == FollowMode::Page,
+                true,
+                "Follow the playhead by pages while playing",
+                Action::FollowPage,
+            );
+            add(
+                ui,
+                Icon::Center,
+                follow == FollowMode::Center,
+                true,
+                "Keep the playhead centred while playing: the audio scrolls past it",
+                Action::FollowCenter,
+            );
+        }
         add(
             ui,
             Icon::DbScale,

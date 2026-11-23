@@ -5,6 +5,19 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// How the timeline follows the playhead during playback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowMode {
+    /// The view stays put.
+    Off,
+    /// Turn the page when the playhead reaches the right edge.
+    #[default]
+    Page,
+    /// Keep the playhead in the middle and scroll the audio past it.
+    Center,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
@@ -30,6 +43,7 @@ pub struct Prefs {
     pub assistant_enabled: bool,
     /// Folders an assistant may read and write (empty: the home folder).
     pub assistant_folders: Vec<PathBuf>,
+    pub follow: FollowMode,
 }
 
 impl Default for Prefs {
@@ -47,6 +61,7 @@ impl Default for Prefs {
             ffmpeg: Default::default(),
             assistant_enabled: false,
             assistant_folders: Vec::new(),
+            follow: FollowMode::Page,
         }
     }
 }
