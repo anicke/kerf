@@ -25,7 +25,10 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new(format!("{}", p.markers.len())).weak());
     });
     ui.horizontal(|ui| {
-        if ui.button("Add at cursor").on_hover_text("M").clicked() {
+        let tip = app
+            .keys
+            .tip("Add a marker at the cursor", Action::AddMarker);
+        if ui.button("Add at cursor").on_hover_text(tip).clicked() {
             action = Some(Action::AddMarker);
         }
         if ui.button("Detect songs…").clicked() {

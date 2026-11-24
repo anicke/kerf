@@ -8,11 +8,13 @@ mod detect_ui;
 mod history_panel;
 mod icons;
 mod jobs;
+mod keymap;
 mod markers_panel;
 mod nav;
 mod prefs;
 mod recent;
 mod recovery;
+mod shortcuts_ui;
 mod stats_panel;
 mod timeline;
 

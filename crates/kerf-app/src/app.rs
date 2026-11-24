@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers};
+use eframe::egui::{self, Key};
 use kerf_core::edit::{self, Clipboard, NormalizeMode, NormalizeSettings, PasteMode};
 use kerf_core::io::{ExportSettings, SampleFormat};
 use kerf_core::render::{self, RenderOptions};
@@ -268,6 +268,7 @@ pub enum Dialog {
     Album(Box<crate::album_ui::AlbumState>),
     Recover(Vec<crate::recovery::Orphan>),
     Recent(crate::recent::QuickOpen),
+    Shortcuts(crate::shortcuts_ui::Editor),
     About,
 }
 
@@ -388,6 +389,7 @@ pub enum Action {
     AudioCache,
     DetectSongs,
     SnapMarkersToSectors,
+    Shortcuts,
     About,
 }
 
@@ -422,6 +424,8 @@ pub struct KerfApp {
     allow_close: bool,
     screenshot: Option<ScreenshotHook>,
     pub prefs: crate::prefs::Prefs,
+    /// Resolved keyboard shortcuts (defaults plus `prefs.shortcuts`).
+    pub keys: crate::keymap::Keymap,
     recovery: Option<crate::recovery::Recovery>,
     /// Text of the time field being typed into.
     time_edit: Option<(egui::Id, String)>,
@@ -486,7 +490,9 @@ impl KerfApp {
             prefs: crate::prefs::Prefs::load(),
             recovery: None,
             time_edit: None,
+            keys: Default::default(),
         };
+        app.keys = crate::keymap::Keymap::new(&app.prefs.shortcuts);
         app.player
             .configure(app.prefs.output_device.clone(), app.prefs.buffer_frames);
         kerf_core::decode::configure(&app.prefs.ffmpeg);
@@ -1066,6 +1072,7 @@ impl KerfApp {
                 self.refresh_cache_view(None);
             }
             About => self.dialog = Some(Dialog::About),
+            Shortcuts => self.dialog = Some(Dialog::Shortcuts(Default::default())),
         }
     }
 
@@ -1284,6 +1291,7 @@ impl KerfApp {
             r.set_interval(new.autosave_secs);
         }
         self.prefs = new;
+        self.keys = crate::keymap::Keymap::new(&self.prefs.shortcuts);
         if assistant_changed {
             self.set_assistant(ctx, self.prefs.assistant_enabled);
         }
@@ -1717,131 +1725,54 @@ impl KerfApp {
         if ctx.egui_wants_keyboard_input() || self.dialog.is_some() {
             return;
         }
-        let cmd = Modifiers::COMMAND;
-        let cmd_shift = Modifiers::COMMAND | Modifiers::SHIFT;
-        // More specific shortcuts first: consume_shortcut ignores extra Shift.
-        let shift = Modifiers::SHIFT;
-        let table: &[(Modifiers, Key, Action)] = &[
-            (cmd_shift, Key::ArrowLeft, Action::ExtendPrevEditPoint),
-            (cmd_shift, Key::ArrowRight, Action::ExtendNextEditPoint),
-            (cmd_shift, Key::M, Action::ToggleMarkersPanel),
-            (cmd_shift, Key::H, Action::ToggleHistoryPanel),
-            (cmd_shift, Key::I, Action::ToggleStatsPanel),
-            (cmd_shift, Key::A, Action::Album),
-            (cmd_shift, Key::O, Action::OpenRecent),
-            (cmd, Key::ArrowLeft, Action::PrevEditPoint),
-            (cmd, Key::ArrowRight, Action::NextEditPoint),
-            (cmd, Key::Comma, Action::Preferences),
-            (Modifiers::ALT, Key::ArrowUp, Action::TallerTracks),
-            (Modifiers::ALT, Key::ArrowDown, Action::ShorterTracks),
-            (cmd, Key::ArrowUp, Action::VZoomIn),
-            (cmd, Key::ArrowDown, Action::VZoomOut),
-            (cmd_shift, Key::Z, Action::Redo),
-            (cmd_shift, Key::S, Action::SaveAs),
-            (cmd_shift, Key::E, Action::Export(ExportKind::Markers)),
-            (cmd_shift, Key::N, Action::AddTrack),
-            (cmd, Key::Z, Action::Undo),
-            (cmd, Key::Y, Action::Redo),
-            (cmd, Key::N, Action::New),
-            (cmd, Key::O, Action::Open),
-            (cmd, Key::I, Action::Import),
-            (cmd, Key::S, Action::Save),
-            (cmd, Key::E, Action::Export(ExportKind::Mix)),
-            (cmd, Key::Q, Action::Quit),
-            (cmd, Key::A, Action::SelectAll),
-            (cmd, Key::D, Action::SelectNone),
-            (cmd, Key::L, Action::Silence),
-            (cmd, Key::T, Action::Crop),
-            (cmd, Key::G, Action::Gain),
-            (cmd, Key::M, Action::Normalize),
-            (cmd, Key::R, Action::Bounce),
-            (cmd, Key::F, Action::ZoomFit),
-            (cmd, Key::C, Action::Copy),
-            (cmd, Key::X, Action::Cut),
-            (cmd, Key::V, Action::Paste),
-            (shift, Key::ArrowLeft, Action::ExtendLeft),
-            (shift, Key::ArrowRight, Action::ExtendRight),
-            (shift, Key::ArrowUp, Action::ExtendTrackUp),
-            (shift, Key::ArrowDown, Action::ExtendTrackDown),
-            (shift, Key::Home, Action::ExtendToStart),
-            (shift, Key::End, Action::ExtendToEnd),
-            (shift, Key::Space, Action::StopAtPlayhead),
-            (shift, Key::Z, Action::ZeroCrossings),
-            (shift, Key::L, Action::ToggleLoop),
-            (Modifiers::NONE, Key::Space, Action::PlayStop),
-            (Modifiers::NONE, Key::ArrowLeft, Action::CursorLeft),
-            (Modifiers::NONE, Key::ArrowRight, Action::CursorRight),
-            (Modifiers::NONE, Key::ArrowUp, Action::TrackUp),
-            (Modifiers::NONE, Key::ArrowDown, Action::TrackDown),
-            (Modifiers::NONE, Key::PageUp, Action::PageLeft),
-            (Modifiers::NONE, Key::PageDown, Action::PageRight),
-            (Modifiers::NONE, Key::OpenBracket, Action::GoSelectionStart),
-            (Modifiers::NONE, Key::CloseBracket, Action::GoSelectionEnd),
-            (Modifiers::NONE, Key::P, Action::PreviewCursor),
-            (Modifiers::NONE, Key::D, Action::ToggleDbScale),
-            (Modifiers::NONE, Key::S, Action::Split),
-            (Modifiers::NONE, Key::M, Action::AddMarker),
-            (Modifiers::NONE, Key::J, Action::ShuttleReverse),
-            (Modifiers::NONE, Key::K, Action::ShuttleStop),
-            (Modifiers::NONE, Key::L, Action::ShuttleForward),
-            (Modifiers::NONE, Key::N, Action::ToggleSnap),
-            (Modifiers::NONE, Key::Delete, Action::Delete),
-            (Modifiers::NONE, Key::Backspace, Action::Delete),
-            (Modifiers::NONE, Key::Home, Action::GoStart),
-            (Modifiers::NONE, Key::End, Action::GoEnd),
-            (Modifiers::NONE, Key::Comma, Action::PrevMarker),
-            (Modifiers::NONE, Key::Period, Action::NextMarker),
-            (Modifiers::NONE, Key::Plus, Action::ZoomIn),
-            (Modifiers::NONE, Key::Equals, Action::ZoomIn),
-            (Modifiers::NONE, Key::Minus, Action::ZoomOut),
-            (Modifiers::NONE, Key::I, Action::FadeIn),
-            (Modifiers::NONE, Key::O, Action::FadeOut),
-            (Modifiers::NONE, Key::Z, Action::ZoomSelection),
-            (Modifiers::NONE, Key::Escape, Action::SelectNone),
-        ];
-        let mut fired = Vec::new();
-        let mut k_down = false;
+        let keys = &self.keys;
+        let shuttle_keys: Vec<Key> = [
+            Action::ShuttleForward,
+            Action::ShuttleReverse,
+            Action::ShuttleStop,
+        ]
+        .into_iter()
+        .flat_map(|a| keys.bindings(a))
+        .map(|b| b.key)
+        .collect();
+        let mut fired: Vec<(Action, Key)> = Vec::new();
+        let mut stop_down = false;
         ctx.input_mut(|i| {
-            // J/K/L act on presses, not on key repeat: holding L must not keep
-            // speeding up, nor holding K keep stopping.
+            // Shuttle keys act on presses, not on key repeat: holding L must
+            // not keep speeding up, nor holding K keep stopping.
             i.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: Key::J | Key::K | Key::L,
-                        repeat: true,
-                        ..
-                    }
-                )
+                !matches!(e, egui::Event::Key { key, repeat: true, .. } if shuttle_keys.contains(key))
             });
-            k_down = i.key_down(Key::K);
-            // egui turns Ctrl+C/X/V into clipboard events rather than key presses.
-            i.events.retain(|e| match e {
-                egui::Event::Copy => {
-                    fired.push(Action::Copy);
-                    false
+            stop_down = keys
+                .bindings(Action::ShuttleStop)
+                .any(|b| i.key_down(b.key));
+            // egui turns Ctrl+C/X/V into clipboard events rather than key
+            // presses: look those keys up like any other.
+            let mods = i.modifiers;
+            i.events.retain(|e| {
+                let key = match e {
+                    egui::Event::Copy => Key::C,
+                    egui::Event::Cut => Key::X,
+                    egui::Event::Paste(_) => Key::V,
+                    _ => return true,
+                };
+                if let Some(a) = keys.action(crate::keymap::Binding::new(mods, key)) {
+                    fired.push((a, key));
                 }
-                egui::Event::Cut => {
-                    fired.push(Action::Cut);
-                    false
-                }
-                egui::Event::Paste(_) => {
-                    fired.push(Action::Paste);
-                    false
-                }
-                _ => true,
+                false
             });
-            for (m, k, a) in table {
-                if i.consume_shortcut(&KeyboardShortcut::new(*m, *k)) {
-                    fired.push(*a);
+            for (b, a) in keys.entries() {
+                if i.consume_shortcut(&b.shortcut()) {
+                    fired.push((*a, b.key));
                 }
             }
         });
-        for mut a in fired {
-            // K held with J or L: half speed for as long as J or L is held.
-            if k_down && matches!(a, Action::ShuttleForward | Action::ShuttleReverse) {
+        for (mut a, key) in fired {
+            // Stop-shuttle held with forward/backward: half speed for as long
+            // as that key is held.
+            if stop_down && matches!(a, Action::ShuttleForward | Action::ShuttleReverse) {
                 let forward = a == Action::ShuttleForward;
-                self.shuttle_hold = Some(if forward { Key::L } else { Key::J });
+                self.shuttle_hold = Some(key);
                 a = if forward {
                     Action::ShuttleSlowForward
                 } else {
@@ -1863,12 +1794,9 @@ impl KerfApp {
         let mut act = None;
         let mut pending_open: Option<PathBuf> = None;
         let mut clear_recent = false;
-        let item = |ui: &mut egui::Ui,
-                    label: &str,
-                    shortcut: &str,
-                    a: Action,
-                    act: &mut Option<Action>| {
-            let btn = egui::Button::new(label).shortcut_text(shortcut);
+        let keys = self.keys.clone();
+        let item = |ui: &mut egui::Ui, label: &str, a: Action, act: &mut Option<Action>| {
+            let btn = egui::Button::new(label).shortcut_text(keys.label(a));
             if ui.add(btn).clicked() {
                 *act = Some(a);
                 ui.close();
@@ -1876,8 +1804,8 @@ impl KerfApp {
         };
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button("File", |ui| {
-                item(ui, "New", "Ctrl+N", Action::New, &mut act);
-                item(ui, "Open Project…", "Ctrl+O", Action::Open, &mut act);
+                item(ui, "New", Action::New, &mut act);
+                item(ui, "Open Project…", Action::Open, &mut act);
                 ui.menu_button("Open Recent", |ui| {
                     let recent = self.prefs.recent_projects.clone();
                     if recent.is_empty() {
@@ -1894,63 +1822,47 @@ impl KerfApp {
                         }
                     }
                     ui.separator();
-                    item(ui, "More…", "Ctrl+Shift+O", Action::OpenRecent, &mut act);
+                    item(ui, "More…", Action::OpenRecent, &mut act);
                     if ui.button("Clear Recent").clicked() {
                         clear_recent = true;
                         ui.close();
                     }
                 });
-                item(ui, "Import Audio…", "Ctrl+I", Action::Import, &mut act);
+                item(ui, "Import Audio…", Action::Import, &mut act);
                 ui.separator();
-                item(ui, "Save Project", "Ctrl+S", Action::Save, &mut act);
-                item(
-                    ui,
-                    "Save Project As…",
-                    "Ctrl+Shift+S",
-                    Action::SaveAs,
-                    &mut act,
-                );
+                item(ui, "Save Project", Action::Save, &mut act);
+                item(ui, "Save Project As…", Action::SaveAs, &mut act);
                 ui.separator();
-                item(
-                    ui,
-                    "Export Mix…",
-                    "Ctrl+E",
-                    Action::Export(ExportKind::Mix),
-                    &mut act,
-                );
+                item(ui, "Export Mix…", Action::Export(ExportKind::Mix), &mut act);
                 item(
                     ui,
                     "Export Selection…",
-                    "",
                     Action::Export(ExportKind::Selection),
                     &mut act,
                 );
                 item(
                     ui,
                     "Export Split at Markers…",
-                    "Ctrl+Shift+E",
                     Action::Export(ExportKind::Markers),
                     &mut act,
                 );
-                item(ui, "Album…", "Ctrl+Shift+A", Action::Album, &mut act);
+                item(ui, "Album…", Action::Album, &mut act);
                 item(
                     ui,
                     "Export Mix with CUE Sheet…",
-                    "",
                     Action::Export(ExportKind::CueSheet),
                     &mut act,
                 );
                 item(
                     ui,
                     "Export Tracks as Stems…",
-                    "",
                     Action::Export(ExportKind::Stems),
                     &mut act,
                 );
                 ui.separator();
-                item(ui, "Audio Cache…", "", Action::AudioCache, &mut act);
+                item(ui, "Audio Cache…", Action::AudioCache, &mut act);
                 ui.separator();
-                item(ui, "Quit", "Ctrl+Q", Action::Quit, &mut act);
+                item(ui, "Quit", Action::Quit, &mut act);
             });
             ui.menu_button("Edit", |ui| {
                 let undo = self
@@ -1961,12 +1873,12 @@ impl KerfApp {
                     .doc
                     .redo_label()
                     .map_or("Redo".to_string(), |l| format!("Redo {l}"));
-                item(ui, &undo, "Ctrl+Z", Action::Undo, &mut act);
-                item(ui, &redo, "Ctrl+Shift+Z", Action::Redo, &mut act);
+                item(ui, &undo, Action::Undo, &mut act);
+                item(ui, &redo, Action::Redo, &mut act);
                 ui.separator();
-                item(ui, "Cut", "Ctrl+X", Action::Cut, &mut act);
-                item(ui, "Copy", "Ctrl+C", Action::Copy, &mut act);
-                item(ui, "Paste", "Ctrl+V", Action::Paste, &mut act);
+                item(ui, "Cut", Action::Cut, &mut act);
+                item(ui, "Copy", Action::Copy, &mut act);
+                item(ui, "Paste", Action::Paste, &mut act);
                 ui.menu_button("Paste mode", |ui| {
                     ui.radio_value(
                         &mut self.paste_mode,
@@ -1977,25 +1889,18 @@ impl KerfApp {
                     ui.radio_value(&mut self.paste_mode, PasteMode::Mix, "Mix (layer on top)");
                 });
                 ui.separator();
-                item(ui, "Delete (close gap)", "Del", Action::Delete, &mut act);
-                item(
-                    ui,
-                    "Silence (leave gap)",
-                    "Ctrl+L",
-                    Action::Silence,
-                    &mut act,
-                );
-                item(ui, "Trim to Selection", "Ctrl+T", Action::Crop, &mut act);
-                item(ui, "Split", "S", Action::Split, &mut act);
-                item(ui, "Insert Silence…", "", Action::InsertSilence, &mut act);
+                item(ui, "Delete (close gap)", Action::Delete, &mut act);
+                item(ui, "Silence (leave gap)", Action::Silence, &mut act);
+                item(ui, "Trim to Selection", Action::Crop, &mut act);
+                item(ui, "Split", Action::Split, &mut act);
+                item(ui, "Insert Silence…", Action::InsertSilence, &mut act);
                 ui.separator();
-                item(ui, "Select All", "Ctrl+A", Action::SelectAll, &mut act);
-                item(ui, "Select None", "Esc", Action::SelectNone, &mut act);
+                item(ui, "Select All", Action::SelectAll, &mut act);
+                item(ui, "Select None", Action::SelectNone, &mut act);
                 ui.separator();
                 item(
                     ui,
                     "Move Selection to Zero Crossings",
-                    "Shift+Z",
                     Action::ZeroCrossings,
                     &mut act,
                 );
@@ -2007,15 +1912,16 @@ impl KerfApp {
                     act = Some(Action::ToggleZeroCrossingSnap);
                 }
                 ui.separator();
-                item(ui, "Preferences…", "Ctrl+,", Action::Preferences, &mut act);
+                item(ui, "Preferences…", Action::Preferences, &mut act);
+                item(ui, "Keyboard Shortcuts…", Action::Shortcuts, &mut act);
             });
             ui.menu_button("Process", |ui| {
-                item(ui, "Normalize…", "Ctrl+M", Action::Normalize, &mut act);
-                item(ui, "Gain…", "Ctrl+G", Action::Gain, &mut act);
+                item(ui, "Normalize…", Action::Normalize, &mut act);
+                item(ui, "Gain…", Action::Gain, &mut act);
                 ui.separator();
-                item(ui, "Fade In", "I", Action::FadeIn, &mut act);
-                item(ui, "Fade Out", "O", Action::FadeOut, &mut act);
-                item(ui, "Remove Fades", "", Action::RemoveFades, &mut act);
+                item(ui, "Fade In", Action::FadeIn, &mut act);
+                item(ui, "Fade Out", Action::FadeOut, &mut act);
+                item(ui, "Remove Fades", Action::RemoveFades, &mut act);
                 ui.menu_button("Fade shape", |ui| {
                     for s in FadeShape::ALL {
                         ui.radio_value(&mut self.fade_shape, s, s.label());
@@ -2035,23 +1941,11 @@ impl KerfApp {
                     self.edit(label, |p| edit::set_auto_crossfade(p, auto_xfade));
                 }
                 ui.separator();
-                item(
-                    ui,
-                    "Render Track(s) in Place",
-                    "Ctrl+R",
-                    Action::Bounce,
-                    &mut act,
-                );
+                item(ui, "Render Track(s) in Place", Action::Bounce, &mut act);
             });
             ui.menu_button("Tracks", |ui| {
-                item(ui, "Add Track", "Ctrl+Shift+N", Action::AddTrack, &mut act);
-                item(
-                    ui,
-                    "Remove Selected Tracks",
-                    "",
-                    Action::RemoveTracks,
-                    &mut act,
-                );
+                item(ui, "Add Track", Action::AddTrack, &mut act);
+                item(ui, "Remove Selected Tracks", Action::RemoveTracks, &mut act);
                 ui.separator();
                 ui.label("Output channels");
                 let ch = self.project().channels;
@@ -2075,97 +1969,55 @@ impl KerfApp {
                 } else {
                     "Stop and Return"
                 };
-                item(ui, space, "Space", Action::PlayStop, &mut act);
-                item(
-                    ui,
-                    shift_space,
-                    "Shift+Space",
-                    Action::StopAtPlayhead,
-                    &mut act,
-                );
-                item(
-                    ui,
-                    "Preview Around Cursor",
-                    "P",
-                    Action::PreviewCursor,
-                    &mut act,
-                );
+                item(ui, space, Action::PlayStop, &mut act);
+                item(ui, shift_space, Action::StopAtPlayhead, &mut act);
+                item(ui, "Preview Around Cursor", Action::PreviewCursor, &mut act);
                 ui.separator();
                 item(
                     ui,
                     "Shuttle Forward (faster)",
-                    "L",
                     Action::ShuttleForward,
                     &mut act,
                 );
                 item(
                     ui,
                     "Shuttle Backward (faster)",
-                    "J",
                     Action::ShuttleReverse,
                     &mut act,
                 );
-                item(ui, "Stop Shuttle", "K", Action::ShuttleStop, &mut act);
-                ui.label(
-                    egui::RichText::new(
-                        "Hold K with J or L for half speed.\nDrag the playhead in the ruler to scrub.",
-                    )
-                    .weak(),
-                );
+                item(ui, "Stop Shuttle", Action::ShuttleStop, &mut act);
+                ui.label(egui::RichText::new(shuttle_hint(&keys)).weak());
                 ui.separator();
-                item(ui, "Go to Start", "Home", Action::GoStart, &mut act);
-                item(ui, "Go to End", "End", Action::GoEnd, &mut act);
-                item(
-                    ui,
-                    "Previous Edit Point",
-                    "Ctrl+←",
-                    Action::PrevEditPoint,
-                    &mut act,
-                );
-                item(
-                    ui,
-                    "Next Edit Point",
-                    "Ctrl+→",
-                    Action::NextEditPoint,
-                    &mut act,
-                );
+                item(ui, "Go to Start", Action::GoStart, &mut act);
+                item(ui, "Go to End", Action::GoEnd, &mut act);
+                item(ui, "Previous Edit Point", Action::PrevEditPoint, &mut act);
+                item(ui, "Next Edit Point", Action::NextEditPoint, &mut act);
                 item(
                     ui,
                     "Go to Selection Start",
-                    "[",
                     Action::GoSelectionStart,
                     &mut act,
                 );
-                item(
-                    ui,
-                    "Go to Selection End",
-                    "]",
-                    Action::GoSelectionEnd,
-                    &mut act,
-                );
+                item(ui, "Go to Selection End", Action::GoSelectionEnd, &mut act);
                 ui.separator();
-                ui.checkbox(&mut self.loop_playback, "Loop (Shift+L)");
+                ui.checkbox(
+                    &mut self.loop_playback,
+                    keys.tip("Loop", Action::ToggleLoop),
+                );
             });
             ui.menu_button("Markers", |ui| {
-                item(ui, "Add Marker", "M", Action::AddMarker, &mut act);
-                item(ui, "Previous Marker", ",", Action::PrevMarker, &mut act);
-                item(ui, "Next Marker", ".", Action::NextMarker, &mut act);
+                item(ui, "Add Marker", Action::AddMarker, &mut act);
+                item(ui, "Previous Marker", Action::PrevMarker, &mut act);
+                item(ui, "Next Marker", Action::NextMarker, &mut act);
                 ui.separator();
-                item(ui, "Detect Song Starts…", "", Action::DetectSongs, &mut act);
+                item(ui, "Detect Song Starts…", Action::DetectSongs, &mut act);
                 item(
                     ui,
                     "Snap Markers to CD Sectors",
-                    "",
                     Action::SnapMarkersToSectors,
                     &mut act,
                 );
-                item(
-                    ui,
-                    "Select Song at Cursor",
-                    "double-click",
-                    Action::SelectSong,
-                    &mut act,
-                );
+                item(ui, "Select Song at Cursor", Action::SelectSong, &mut act);
                 ui.separator();
                 ui.label(
                     egui::RichText::new("Double-click a marker to rename,\nright-click to delete.")
@@ -2173,50 +2025,28 @@ impl KerfApp {
                 );
             });
             ui.menu_button("View", |ui| {
-                item(ui, "Zoom In", "+", Action::ZoomIn, &mut act);
-                item(ui, "Zoom Out", "-", Action::ZoomOut, &mut act);
-                item(ui, "Zoom to Fit", "Ctrl+F", Action::ZoomFit, &mut act);
-                item(
-                    ui,
-                    "Zoom to Selection",
-                    "Z",
-                    Action::ZoomSelection,
-                    &mut act,
-                );
+                item(ui, "Zoom In", Action::ZoomIn, &mut act);
+                item(ui, "Zoom Out", Action::ZoomOut, &mut act);
+                item(ui, "Zoom to Fit", Action::ZoomFit, &mut act);
+                item(ui, "Zoom to Selection", Action::ZoomSelection, &mut act);
                 ui.separator();
-                item(
-                    ui,
-                    "Zoom In Vertically",
-                    "Ctrl+↑",
-                    Action::VZoomIn,
-                    &mut act,
-                );
-                item(
-                    ui,
-                    "Zoom Out Vertically",
-                    "Ctrl+↓",
-                    Action::VZoomOut,
-                    &mut act,
-                );
-                item(ui, "Reset Vertical Zoom", "", Action::VZoomReset, &mut act);
+                item(ui, "Zoom In Vertically", Action::VZoomIn, &mut act);
+                item(ui, "Zoom Out Vertically", Action::VZoomOut, &mut act);
+                item(ui, "Reset Vertical Zoom", Action::VZoomReset, &mut act);
                 ui.separator();
-                item(ui, "Taller Tracks", "Alt+↑", Action::TallerTracks, &mut act);
-                item(
-                    ui,
-                    "Shorter Tracks",
-                    "Alt+↓",
-                    Action::ShorterTracks,
-                    &mut act,
-                );
-                item(ui, "Fit Tracks to Window", "", Action::FitTracks, &mut act);
+                item(ui, "Taller Tracks", Action::TallerTracks, &mut act);
+                item(ui, "Shorter Tracks", Action::ShorterTracks, &mut act);
+                item(ui, "Fit Tracks to Window", Action::FitTracks, &mut act);
                 item(
                     ui,
                     "Reset Track Heights",
-                    "",
                     Action::ResetTrackHeights,
                     &mut act,
                 );
-                ui.checkbox(&mut self.view.db_scale, "Waveform in dB (D)");
+                ui.checkbox(
+                    &mut self.view.db_scale,
+                    keys.tip("Waveform in dB", Action::ToggleDbScale),
+                );
                 ui.menu_button("Time Format", |ui| {
                     for f in kerf_core::util::TimeFormat::ALL {
                         if ui.radio(self.prefs.time_format == f, f.label()).clicked() {
@@ -2243,7 +2073,7 @@ impl KerfApp {
                 if ui
                     .checkbox(
                         &mut self.prefs.show_markers_panel,
-                        "Markers panel (Ctrl+Shift+M)",
+                        keys.tip("Markers panel", Action::ToggleMarkersPanel),
                     )
                     .changed()
                 {
@@ -2252,7 +2082,7 @@ impl KerfApp {
                 if ui
                     .checkbox(
                         &mut self.prefs.show_stats_panel,
-                        "Statistics panel (Ctrl+Shift+I)",
+                        keys.tip("Statistics panel", Action::ToggleStatsPanel),
                     )
                     .changed()
                 {
@@ -2261,7 +2091,7 @@ impl KerfApp {
                 if ui
                     .checkbox(
                         &mut self.prefs.show_history_panel,
-                        "History panel (Ctrl+Shift+H)",
+                        keys.tip("History panel", Action::ToggleHistoryPanel),
                     )
                     .changed()
                 {
@@ -2269,7 +2099,8 @@ impl KerfApp {
                 }
             });
             ui.menu_button("Help", |ui| {
-                item(ui, "About Kerf", "", Action::About, &mut act)
+                item(ui, "Keyboard Shortcuts…", Action::Shortcuts, &mut act);
+                item(ui, "About Kerf", Action::About, &mut act);
             });
         });
         if let Some(a) = act {
@@ -2301,33 +2132,33 @@ impl KerfApp {
                 let playing = self.player.is_playing();
                 use crate::icons::{button, Icon};
                 if button(ui, Icon::GoStart, false, field_h)
-                    .on_hover_text("Go to start (Home)")
+                    .on_hover_text(self.keys.tip("Go to start", Action::GoStart))
                     .clicked()
                 {
                     self.perform(&ctx, Action::GoStart);
                 }
                 let icon = if playing { Icon::Stop } else { Icon::Play };
                 if button(ui, icon, false, field_h)
-                    .on_hover_text("Play / Stop (Space)")
+                    .on_hover_text(self.keys.tip("Play / Stop", Action::PlayStop))
                     .clicked()
                 {
                     self.perform(&ctx, Action::PlayStop);
                 }
                 if button(ui, Icon::GoEnd, false, field_h)
-                    .on_hover_text("Go to end (End)")
+                    .on_hover_text(self.keys.tip("Go to end", Action::GoEnd))
                     .clicked()
                 {
                     self.perform(&ctx, Action::GoEnd);
                 }
                 if button(ui, Icon::Loop, self.loop_playback, field_h)
-                    .on_hover_text("Loop playback (Shift+L)")
+                    .on_hover_text(self.keys.tip("Loop playback", Action::ToggleLoop))
                     .clicked()
                 {
                     self.loop_playback = !self.loop_playback;
                 }
                 if playing && !self.player.is_scrubbing() && self.player.speed() != 1.0 {
                     ui.label(egui::RichText::new(speed_label(self.player.speed())).monospace())
-                        .on_hover_text("Shuttle speed (J / K / L)");
+                        .on_hover_text("Shuttle speed");
                 }
                 ui.separator();
 
@@ -2419,14 +2250,30 @@ impl KerfApp {
                     snap,
                     true,
                     field_h,
-                    "Snap to clip edges, markers and cursor (N)",
+                    &self
+                        .keys
+                        .tip("Snap to clip edges, markers and cursor", Action::ToggleSnap),
                 ) {
                     self.perform(&ctx, Action::ToggleSnap);
                 }
-                if tool(ui, Icon::ZoomIn, false, true, field_h, "Zoom in (+)") {
+                if tool(
+                    ui,
+                    Icon::ZoomIn,
+                    false,
+                    true,
+                    field_h,
+                    &self.keys.tip("Zoom in", Action::ZoomIn),
+                ) {
                     self.perform(&ctx, Action::ZoomIn);
                 }
-                if tool(ui, Icon::ZoomOut, false, true, field_h, "Zoom out (−)") {
+                if tool(
+                    ui,
+                    Icon::ZoomOut,
+                    false,
+                    true,
+                    field_h,
+                    &self.keys.tip("Zoom out", Action::ZoomOut),
+                ) {
                     self.perform(&ctx, Action::ZoomOut);
                 }
                 if tool(
@@ -2435,7 +2282,7 @@ impl KerfApp {
                     false,
                     true,
                     field_h,
-                    "Zoom to fit (Ctrl+F)",
+                    &self.keys.tip("Zoom to fit", Action::ZoomFit),
                 ) {
                     self.perform(&ctx, Action::ZoomFit);
                 }
@@ -2473,14 +2320,12 @@ impl KerfApp {
         use crate::icons::{tool, Icon};
         let has_range = self.sel.range.is_some_and(|(a, b)| b > a);
         let has_tracks = !self.project().tracks.is_empty();
-        let undo = self.doc.undo_label().map(|l| format!("Undo {l} (Ctrl+Z)"));
-        let redo = self
-            .doc
-            .redo_label()
-            .map(|l| format!("Redo {l} (Ctrl+Shift+Z)"));
+        let undo = self.doc.undo_label().map(|l| format!("Undo {l}"));
+        let redo = self.doc.redo_label().map(|l| format!("Redo {l}"));
         let mut act = None;
+        let keys = self.keys.clone();
         let mut add = |ui: &mut egui::Ui, icon, on, enabled, tip: &str, a: Action| {
-            if tool(ui, icon, on, enabled, h, tip) {
+            if tool(ui, icon, on, enabled, h, &keys.tip(tip, a)) {
                 act = Some(a);
             }
         };
@@ -2491,7 +2336,7 @@ impl KerfApp {
             Icon::Undo,
             false,
             undo.is_some(),
-            undo.as_deref().unwrap_or("Undo (Ctrl+Z)"),
+            undo.as_deref().unwrap_or("Undo"),
             Action::Undo,
         );
         add(
@@ -2499,7 +2344,7 @@ impl KerfApp {
             Icon::Redo,
             false,
             redo.is_some(),
-            redo.as_deref().unwrap_or("Redo (Ctrl+Shift+Z)"),
+            redo.as_deref().unwrap_or("Redo"),
             Action::Redo,
         );
         add(
@@ -2507,24 +2352,17 @@ impl KerfApp {
             Icon::Split,
             false,
             has_tracks,
-            "Split at the cursor or selection edges (S)",
+            "Split at the cursor or selection edges",
             Action::Split,
         );
-        add(ui, Icon::Cut, false, has_range, "Cut (Ctrl+X)", Action::Cut);
-        add(
-            ui,
-            Icon::Copy,
-            false,
-            has_range,
-            "Copy (Ctrl+C)",
-            Action::Copy,
-        );
+        add(ui, Icon::Cut, false, has_range, "Cut", Action::Cut);
+        add(ui, Icon::Copy, false, has_range, "Copy", Action::Copy);
         add(
             ui,
             Icon::Paste,
             false,
             self.clipboard.is_some(),
-            "Paste at the cursor (Ctrl+V)",
+            "Paste at the cursor",
             Action::Paste,
         );
         add(
@@ -2543,7 +2381,7 @@ impl KerfApp {
             Icon::FadeIn,
             false,
             has_range,
-            "Fade in over the selection (I)",
+            "Fade in over the selection",
             Action::FadeIn,
         );
         add(
@@ -2551,7 +2389,7 @@ impl KerfApp {
             Icon::FadeOut,
             false,
             has_range,
-            "Fade out over the selection (O)",
+            "Fade out over the selection",
             Action::FadeOut,
         );
         add(
@@ -2559,17 +2397,10 @@ impl KerfApp {
             Icon::Normalize,
             false,
             has_tracks,
-            "Normalize… (Ctrl+M)",
+            "Normalize…",
             Action::Normalize,
         );
-        add(
-            ui,
-            Icon::Gain,
-            false,
-            has_tracks,
-            "Gain… (Ctrl+G)",
-            Action::Gain,
-        );
+        add(ui, Icon::Gain, false, has_tracks, "Gain…", Action::Gain);
         ui.separator();
 
         // View
@@ -2598,7 +2429,7 @@ impl KerfApp {
             Icon::DbScale,
             self.view.db_scale,
             true,
-            "Waveform in dB (D)",
+            "Waveform in dB",
             Action::ToggleDbScale,
         );
         add(
@@ -2614,7 +2445,7 @@ impl KerfApp {
             Icon::ZoomSelection,
             false,
             has_range,
-            "Zoom to selection (Z)",
+            "Zoom to selection",
             Action::ZoomSelection,
         );
         add(
@@ -2622,7 +2453,7 @@ impl KerfApp {
             Icon::MarkersPanel,
             self.prefs.show_markers_panel,
             true,
-            "Markers panel (Ctrl+Shift+M)",
+            "Markers panel",
             Action::ToggleMarkersPanel,
         );
         add(
@@ -2630,7 +2461,7 @@ impl KerfApp {
             Icon::StatsPanel,
             self.prefs.show_stats_panel,
             true,
-            "Statistics panel (Ctrl+Shift+I)",
+            "Statistics panel",
             Action::ToggleStatsPanel,
         );
         add(
@@ -2638,7 +2469,7 @@ impl KerfApp {
             Icon::HistoryPanel,
             self.prefs.show_history_panel,
             true,
-            "History panel (Ctrl+Shift+H)",
+            "History panel",
             Action::ToggleHistoryPanel,
         );
         if let Some(a) = act {
@@ -2721,6 +2552,7 @@ impl KerfApp {
             Dialog::Recover(_) => "Recover Unsaved Work",
             Dialog::Recent(_) => "Recent Projects",
             Dialog::About => "About Kerf",
+            Dialog::Shortcuts(_) => "Keyboard Shortcuts",
         };
         let scope = match self.sel.range.filter(|(a, b)| b > a) {
             Some(_) => format!("selection on {} track(s)", self.target_tracks().len()),
@@ -2731,7 +2563,11 @@ impl KerfApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .max_width(if matches!(dialog, Dialog::Album(_)) { 760.0 } else { 540.0 })
+            .max_width(match dialog {
+                Dialog::Album(_) => 760.0,
+                Dialog::Shortcuts(_) => 680.0,
+                _ => 540.0,
+            })
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| match &mut dialog {
                 Dialog::Normalize(s) => {
@@ -3114,12 +2950,20 @@ impl KerfApp {
                         }
                     }
                 }
+                Dialog::Shortcuts(ed) => {
+                    crate::shortcuts_ui::ui(ui, ed, &mut self.prefs, &mut self.keys);
+                }
                 Dialog::About => {
                     ui.heading("Kerf");
                     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                     ui.label("A fast, precise audio editor. 32-bit float throughout, non-destructive, unlimited undo.");
                     ui.separator();
-                    ui.label(egui::RichText::new(SHORTCUT_HELP).monospace().small());
+                    ui.label(egui::RichText::new(MOUSE_HELP).small());
+                    ui.add_space(4.0);
+                    if ui.button("Keyboard Shortcuts…").clicked() {
+                        run = Some(Box::new(|app, ctx| app.perform(ctx, Action::Shortcuts)));
+                        close = true;
+                    }
                 }
             });
 
@@ -3815,13 +3659,13 @@ fn prefs_ui(ui: &mut egui::Ui, draft: &mut PrefsDraft, fallback_note: Option<&st
     ui.heading("Playback");
     ui.checkbox(
         &mut p.space_returns_to_start,
-        "Space stops and returns to where playback started",
+        "Play / stop returns to where playback started",
     );
     ui.label(
         egui::RichText::new(if p.space_returns_to_start {
-            "Shift+Space stops at the playhead instead."
+            "Stop at playhead (Shift+Space by default) stops where you are instead."
         } else {
-            "Space stops at the playhead; Shift+Space returns to the start."
+            "Play / stop stops at the playhead; Shift+Space (by default) returns to the start."
         })
         .weak()
         .small(),
@@ -4133,32 +3977,28 @@ fn meter(ui: &mut egui::Ui, levels: [f32; 2], channels: u16) {
     }
 }
 
-const SHORTCUT_HELP: &str = "\
-Space        play / stop          Shift+Space  stop at playhead (or the reverse)
-P            preview around cursor            L     loop
-← / →        nudge cursor (skip 5 s while playing)
-Shift+← / →  extend selection     Ctrl+← / →   previous / next edit point
-↑ / ↓        previous / next track (Shift adds to the selection)
-Home / End   start / end (Shift extends)      [ / ]  selection start / end
-PgUp / PgDn  scroll a screen      + / - / Z    zoom in / out / to selection
-S            split                Del / ⌫      delete (close gap)
-Ctrl+X/C/V   cut / copy / paste   Ctrl+L       silence (keep gap)
-Ctrl+Z       undo                 Ctrl+⇧Z      redo
-Ctrl+M       normalize            Ctrl+G       gain
-I / O        fade in / out        Ctrl+R       render in place
-M            add marker           , / .        previous / next marker
-Ctrl+⇧M      markers panel        Ctrl+⇧H      history panel
-Ctrl+⇧I      statistics panel     Ctrl+,       preferences
-Ctrl+↑ / ↓   vertical zoom        D            waveform in dB
-Shift+Z      selection to zero crossings
-Ctrl+E       export mix           Ctrl+⇧E      export split at markers
-Ctrl+O       open project         Ctrl+⇧O      open a recent project
-
+const MOUSE_HELP: &str = "\
 Mouse: drag in a track to select · drag a clip's title bar to move it ·
 drag clip edges to trim · drag the squares at a clip's top corners for fades ·
 drag selection edges to adjust · double-click between markers to select a song ·
 click the time fields to type a time (right-click for the format) · Alt+wheel vertical zoom ·
 Ctrl+wheel zoom · Shift+wheel scroll · Alt disables snapping.";
+
+/// How to shuttle at half speed, with the keys as bound.
+fn shuttle_hint(keys: &crate::keymap::Keymap) -> String {
+    let k = |a| keys.label(a);
+    let (stop, fwd, rev) = (
+        k(Action::ShuttleStop),
+        k(Action::ShuttleForward),
+        k(Action::ShuttleReverse),
+    );
+    let half = if stop.is_empty() || fwd.is_empty() || rev.is_empty() {
+        String::new()
+    } else {
+        format!("Hold {stop} with {rev} or {fwd} for half speed.\n")
+    };
+    format!("{half}Drag the playhead in the ruler to scrub.")
+}
 
 /// Fastest J / L shuttle speed.
 const MAX_SHUTTLE_SPEED: f64 = 8.0;

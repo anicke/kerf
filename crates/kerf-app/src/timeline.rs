@@ -483,7 +483,12 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
         painter.text(
             geo.lanes.center(),
             Align2::CENTER_CENTER,
-            "Drop audio files here, or press Ctrl+I to import\n\nWAV · FLAC · MP3 · OGG · AIFF · M4A/AAC · CAF, and more with FFmpeg",
+            match app.keys.label(crate::app::Action::Import) {
+                k if k.is_empty() => {
+                    "Drop audio files here, or use File → Import Audio".to_string()
+                }
+                k => format!("Drop audio files here, or press {k} to import"),
+            } + "\n\nWAV · FLAC · MP3 · OGG · AIFF · M4A/AAC · CAF, and more with FFmpeg",
             FontId::proportional(18.0),
             visuals.weak_text_color(),
         );

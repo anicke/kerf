@@ -48,6 +48,8 @@ pub struct Prefs {
     pub follow: FollowMode,
     /// Recently opened or saved projects, most recent first.
     pub recent_projects: Vec<PathBuf>,
+    /// Changed keyboard shortcuts: command id → keys (see `keymap`).
+    pub shortcuts: crate::keymap::Overrides,
 }
 
 impl Default for Prefs {
@@ -69,6 +71,7 @@ impl Default for Prefs {
             assistant_folders: Vec::new(),
             follow: FollowMode::Page,
             recent_projects: Vec::new(),
+            shortcuts: Default::default(),
         }
     }
 }

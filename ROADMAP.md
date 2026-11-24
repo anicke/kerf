@@ -16,7 +16,7 @@ trim, fades and crossfades; peak, RMS and BS.1770 loudness normalization; memory
 (flat RAM use); song-start detection for live recordings with setlist naming; CD-safe split and CUE
 export with an Audio CD preset; keyboard navigation, markers panel, crash recovery, preferences and
 device selection; scrubbing and J/K/L shuttle; an undo history panel; a statistics panel with true
-peak, loudness range and a live loudness meter; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
+peak, loudness range and a live loudness meter; customisable keyboard shortcuts; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
 FLAC export, album loudness and the Album window; a JSON operations layer and the `kerf-cli`
 command-line tool; the `kerf-mcp` MCP server with waveform images, also working live inside the app; FFmpeg as an
 optional decoder.
@@ -153,6 +153,8 @@ Size: about 2–3 days.
 
 ## Phase 6: Remaining everyday features
 
+**Status:** done.
+
 From the comparison with established editors:
 
 - ~~Scrubbing and J/K/L shuttle~~ (done: drag the playhead or Ctrl+drag the ruler; J/K/L up to
@@ -164,7 +166,9 @@ From the comparison with established editors:
   selection or project, measured in the background; live momentary, short-term and integrated
   loudness while playing. True peak and loudness range are also in `analyze` for the CLI and MCP).
 - ~~Recent files~~ (done: *File → Open Recent* and Ctrl+Shift+O).
-- Customisable shortcuts.
+- ~~Customisable shortcuts~~ (done: *Edit → Keyboard Shortcuts…*; press keys to add one, a key
+  already in use moves to the new command, reset one command or all; menus and tooltips show the
+  keys as bound).
 
 Size: about 3–4 days in total.
 
