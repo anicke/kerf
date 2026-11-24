@@ -1170,6 +1170,7 @@ impl Session {
             };
 
         let mut sector_errors = None;
+        let mut track_paths = Vec::new();
         let files: Vec<ExportFile> = match o.kind {
             ExportKind::Mix => {
                 let (a, b) = self.range(o.start.as_ref(), o.end.as_ref())?;
@@ -1181,8 +1182,15 @@ impl Session {
                     sector_errors = sector.map(|s| render::sector_errors(&regions, s));
                 }
                 let base = o.base_name.clone().unwrap_or_else(|| self.base_name());
-                render::region_paths(&regions, path, &base, settings.container)
-                    .into_iter()
+                let names = o
+                    .names
+                    .as_deref()
+                    .unwrap_or(crate::naming::DEFAULT_TRACK_NAMES);
+                track_paths =
+                    render::region_paths(p, &regions, path, names, &base, settings.container)?;
+                track_paths
+                    .iter()
+                    .cloned()
                     .zip(&regions)
                     .map(|(f, r)| file(f, Some(r.name.clone()), Some((r.start, r.end))))
                     .collect()
@@ -1276,13 +1284,11 @@ impl Session {
                 )?;
             }
             ExportKind::Tracks => {
-                let base = o.base_name.clone().unwrap_or_else(|| self.base_name());
                 render::export_regions(
                     p,
                     &regions(),
                     &RenderOptions::default(),
-                    path,
-                    &base,
+                    &track_paths,
                     settings,
                     progress,
                 )?;

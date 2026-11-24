@@ -24,6 +24,9 @@ pub enum Error {
     Cancelled,
     #[error("{0}")]
     Unsupported(&'static str),
+    /// A file-name template that can't be used, or names that clash.
+    #[error("file names: {0}")]
+    Naming(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

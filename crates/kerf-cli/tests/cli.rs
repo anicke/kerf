@@ -140,7 +140,7 @@ fn split_live_show_into_named_tagged_tracks() {
     let files = v["steps"][4]["result"]["files"].as_array().unwrap();
     assert_eq!(files.len(), 3);
     let first = PathBuf::from(files[0]["path"].as_str().unwrap());
-    assert_eq!(first, out.join("01 - show - Opener.flac"));
+    assert_eq!(first, out.join("01 - Opener.flac"));
     assert!(files
         .iter()
         .all(|f| Path::new(f["path"].as_str().unwrap()).is_file()));

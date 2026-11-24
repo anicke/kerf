@@ -131,6 +131,8 @@ kerf-cli analyze *.wav                              # peak, true peak, RMS, LUFS
 kerf-cli info show.kerf                             # tracks, clips, markers, album details
 kerf-cli export *.flac --preset cd --out cd/        # batch convert
 kerf-cli export show.kerf --kind tracks --preset flac --out flac/ --dry-run
+kerf-cli export show.kerf --kind tracks --preset flac --out music/ \
+    --names "{artist} - {album} ({year})/{nn} {title}"   # file names, with folders
 kerf-cli waveform show.kerf -o show.png --db        # a picture: peaks, RMS, clipping, markers
 kerf-cli run --ops edits.jsonl show.wav             # any operation, as JSON
 ```

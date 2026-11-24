@@ -215,6 +215,11 @@ struct FormatArgs {
     /// Don't snap track boundaries to CD sectors (on by default with --preset cd).
     #[arg(long)]
     no_cd_safe: bool,
+    /// File names for one file per track (default "{nn} - {title}"). Fields:
+    /// {nn} {num} {title} {artist} {album} {year} {genre} {project}; "/" makes
+    /// folders, e.g. "{artist} - {album}/{nn} {title}".
+    #[arg(long, value_name = "TEMPLATE")]
+    names: Option<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum, Default)]
@@ -273,6 +278,7 @@ impl FormatArgs {
             channels: self.channels,
             dither: self.no_dither.then_some(false),
             cd_safe: self.no_cd_safe.then_some(false),
+            names: self.names.clone(),
             ..Default::default()
         }
     }

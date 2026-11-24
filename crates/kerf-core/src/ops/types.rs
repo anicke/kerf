@@ -218,9 +218,14 @@ pub struct ExportOptions {
     pub start: Option<Time>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<Time>,
-    /// File name base for track exports (default: the project or source name).
+    /// Value of `{project}` in file names (default: the project or source name).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_name: Option<String>,
+    /// Tracks exports: file name template, default `{nn} - {title}`. Fields:
+    /// {nn} {num} {title} {artist} {album} {year} {genre} {project}; `/` makes
+    /// folders, e.g. `{artist} - {album}/{nn} {title}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub names: Option<String>,
 }
 
 /// One operation. In JSON: `{"op": "split", "at": "1:23.5"}`.
@@ -824,6 +829,7 @@ impl From<crate::Error> for OpError {
             E::Silent => ErrorCode::Silent,
             E::Cancelled => ErrorCode::Cancelled,
             E::Unsupported(_) => ErrorCode::Unsupported,
+            E::Naming(_) => ErrorCode::InvalidArgument,
         };
         Self::new(code, e.to_string())
     }

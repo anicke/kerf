@@ -271,8 +271,31 @@ fn album_workflow_detect_name_level_export() {
     assert_eq!(dry["written"], false);
     let files = dry["files"].as_array().unwrap();
     assert_eq!(files.len(), 3);
-    assert_eq!(files[0]["path"], json!(out.join("01 - show - Opener.flac")));
+    assert_eq!(files[0]["path"], json!(out.join("01 - Opener.flac")));
     assert!(!out.exists(), "dry run writes nothing");
+
+    // A name template with a folder from the album details.
+    let dry = ok(
+        &mut s,
+        json!({"op": "export", "path": out, "kind": "tracks", "preset": "flac", "dry_run": true,
+               "names": "{artist} - {album}/{num}. {title}"}),
+    );
+    assert_eq!(
+        dry["files"][1]["path"],
+        json!(out.join("The Band - Live").join("2. Ballad.flac"))
+    );
+    // Names that clash or don't parse are refused before anything is written.
+    for names in ["{album}", "{nn} {titel}"] {
+        assert_eq!(
+            err_code(
+                &mut s,
+                json!({"op": "export", "path": out, "kind": "tracks", "preset": "flac", "names": names})
+            ),
+            "invalid_argument",
+            "{names}"
+        );
+    }
+    assert!(!out.exists());
 
     let r = ok(
         &mut s,

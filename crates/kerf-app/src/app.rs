@@ -269,6 +269,8 @@ pub enum Dialog {
     Recover(Vec<crate::recovery::Orphan>),
     Recent(crate::recent::QuickOpen),
     Shortcuts(crate::shortcuts_ui::Editor),
+    /// Export `kind` to the target, which would replace these files.
+    ConfirmOverwrite(ExportKind, PathBuf, Vec<PathBuf>),
     About,
 }
 
@@ -406,9 +408,6 @@ pub struct KerfApp {
     shuttle_hold: Option<Key>,
     pub fade_shape: FadeShape,
     pub paste_mode: PasteMode,
-    pub export_settings: ExportSettings,
-    /// Snap split/CUE track boundaries to CD sectors (no sector boundary errors).
-    pub cd_safe: bool,
     pub status: Option<(String, bool)>,
     pub dialog: Option<Dialog>,
     pub job: Option<Job>,
@@ -465,8 +464,6 @@ impl KerfApp {
             shuttle_hold: None,
             fade_shape: FadeShape::EqualPower,
             paste_mode: PasteMode::Insert,
-            export_settings: ExportSettings::default(),
-            cd_safe: true,
             status: None,
             dialog: None,
             job: None,
@@ -1518,37 +1515,55 @@ impl KerfApp {
         }
     }
 
-    fn start_export(&mut self, ctx: &egui::Context, kind: ExportKind) {
-        if self.busy() {
-            return;
-        }
-        let project = self.project().clone();
-        let settings = self.export_settings;
-        let base = self
-            .doc
+    /// Value of `{project}` in export names: the project file's name, or
+    /// else the album title.
+    pub fn export_base(&self) -> String {
+        self.doc
             .path
             .as_ref()
             .and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Untitled".into());
-        let len = project.length();
-        let range = match kind {
-            ExportKind::Selection => match self.require_range() {
-                Some(r) => r,
-                None => return,
-            },
-            _ => (0, len),
-        };
+            .or_else(|| Some(self.project().album.title.clone()).filter(|t| !t.is_empty()))
+            .unwrap_or_else(|| "Untitled".into())
+    }
 
+    /// The files Split at Markers writes into `dir`, or why the names
+    /// don't work.
+    pub fn track_export_paths(&self, p: &Project, dir: &Path) -> kerf_core::Result<Vec<PathBuf>> {
+        render::region_paths(
+            p,
+            &self.export_regions_for(p),
+            dir,
+            &self.prefs.track_names,
+            &self.export_base(),
+            self.prefs.export.container,
+        )
+    }
+
+    /// Ask where to export, then export (after confirming when files
+    /// would be replaced).
+    fn start_export(&mut self, ctx: &egui::Context, kind: ExportKind) {
+        if self.busy() {
+            return;
+        }
+        let _ = self.prefs.save(); // remember the format and names
+        let project = self.project().clone();
+        if kind == ExportKind::Selection && self.require_range().is_none() {
+            return;
+        }
         let mut dlg = rfd::FileDialog::new();
         if let Some(d) = &self.last_dir {
             dlg = dlg.set_directory(d);
         }
         let target = match kind {
             ExportKind::Mix | ExportKind::Selection | ExportKind::CueSheet => {
-                let c = settings.container;
+                let c = self.prefs.export.container;
+                let name = Some(project.album.title.clone())
+                    .filter(|t| !t.is_empty() && self.doc.path.is_none())
+                    .unwrap_or_else(|| self.export_base());
+                let name = kerf_core::util::sanitize_file_name(&name);
                 dlg.add_filter(c.label(), &[c.extension()])
-                    .set_file_name(format!("{base}.{}", c.extension()))
+                    .set_file_name(format!("{name}.{}", c.extension()))
                     .save_file()
                     .map(|mut p| {
                         if p.extension().is_none() {
@@ -1562,7 +1577,50 @@ impl KerfApp {
             }
         };
         let Some(target) = target else { return };
+        // Files this would replace that the save dialog hasn't asked about.
+        let planned = match kind {
+            ExportKind::Markers => match self.track_export_paths(&project, &target) {
+                Ok(paths) => paths,
+                Err(e) => return self.error(e),
+            },
+            ExportKind::Stems => render::stem_paths(&project, &target, self.prefs.export.container)
+                .into_iter()
+                .map(|(_, p)| p)
+                .collect(),
+            ExportKind::CueSheet => vec![target.with_extension("cue")],
+            ExportKind::Mix | ExportKind::Selection => Vec::new(),
+        };
+        let existing: Vec<PathBuf> = planned.into_iter().filter(|p| p.exists()).collect();
+        if existing.is_empty() {
+            self.run_export(ctx, kind, target);
+        } else {
+            self.dialog = Some(Dialog::ConfirmOverwrite(kind, target, existing));
+        }
+    }
+
+    fn run_export(&mut self, ctx: &egui::Context, kind: ExportKind, target: PathBuf) {
+        if self.busy() {
+            return;
+        }
+        let project = self.project().clone();
+        let settings = self.prefs.export;
+        let base = self.export_base();
+        let len = project.length();
+        let range = match kind {
+            ExportKind::Selection => match self.require_range() {
+                Some(r) => r,
+                None => return,
+            },
+            _ => (0, len),
+        };
         let regions = self.export_regions_for(&project);
+        let track_paths = match kind {
+            ExportKind::Markers => match self.track_export_paths(&project, &target) {
+                Ok(p) => p,
+                Err(e) => return self.error(e),
+            },
+            _ => Vec::new(),
+        };
 
         self.job = Some(Job::spawn(ctx, kind.title(), move |ctl| {
             let mut progress = |p: f64| ctl.progress(p);
@@ -1581,8 +1639,7 @@ impl KerfApp {
                     &project,
                     &regions,
                     &RenderOptions::default(),
-                    &target,
-                    &base,
+                    &track_paths,
                     settings,
                     &mut progress,
                 ),
@@ -2553,6 +2610,7 @@ impl KerfApp {
             Dialog::Recent(_) => "Recent Projects",
             Dialog::About => "About Kerf",
             Dialog::Shortcuts(_) => "Keyboard Shortcuts",
+            Dialog::ConfirmOverwrite(..) => "Replace Files?",
         };
         let scope = match self.sel.range.filter(|(a, b)| b > a) {
             Some(_) => format!("selection on {} track(s)", self.target_tracks().len()),
@@ -2662,16 +2720,60 @@ impl KerfApp {
                 }
                 Dialog::Export(kind) => {
                     let kind = *kind;
+                    let mut names_ok = true;
                     match kind {
                         ExportKind::Markers => {
                             let regions = self.export_regions_for(self.project());
-                            ui.label(format!("Creates {} file(s), one per region between markers:", regions.len()));
-                            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
-                                let sr = self.project().sample_rate;
-                                for (i, r) in regions.iter().enumerate() {
-                                    ui.label(format!("{:02}  {}  ({})", i + 1, r.name, format_time(r.end - r.start, sr)));
+                            ui.horizontal(|ui| {
+                                ui.label("File names");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.prefs.track_names)
+                                        .desired_width(300.0)
+                                        .font(egui::TextStyle::Monospace),
+                                );
+                                if ui
+                                    .small_button("↺")
+                                    .on_hover_text(format!("Back to {}", kerf_core::naming::DEFAULT_TRACK_NAMES))
+                                    .clicked()
+                                {
+                                    self.prefs.track_names = kerf_core::naming::DEFAULT_TRACK_NAMES.into();
                                 }
                             });
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Fields: {}. A / makes folders, e.g. {{artist}} - {{album}}/{{nn}} {{title}}.",
+                                    kerf_core::naming::PLACEHOLDERS.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(" ")
+                                ))
+                                .weak()
+                                .small(),
+                            )
+                            .on_hover_text(
+                                kerf_core::naming::PLACEHOLDERS
+                                    .iter()
+                                    .map(|(p, d)| format!("{p}  {d}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            );
+                            ui.add_space(4.0);
+                            match self.track_export_paths(self.project(), Path::new("")) {
+                                Ok(paths) => {
+                                    ui.label(format!("Creates {} file(s), one per stretch between markers:", regions.len()));
+                                    egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                                        let sr = self.project().sample_rate;
+                                        egui::Grid::new("split_files").num_columns(2).spacing([16.0, 2.0]).show(ui, |ui| {
+                                            for (r, path) in regions.iter().zip(&paths) {
+                                                ui.label(egui::RichText::new(path.display().to_string()).monospace());
+                                                ui.label(egui::RichText::new(format_time(r.end - r.start, sr)).weak());
+                                                ui.end_row();
+                                            }
+                                        });
+                                    });
+                                }
+                                Err(e) => {
+                                    ui.colored_label(ui.visuals().error_fg_color, e.to_string());
+                                    names_ok = false;
+                                }
+                            }
                             if self.project().markers.is_empty() {
                                 ui.colored_label(ui.visuals().warn_fg_color, "No markers yet — press M to add split points.");
                             }
@@ -2682,7 +2784,7 @@ impl KerfApp {
                         ExportKind::CueSheet => {
                             let n = self.export_regions_for(self.project()).len();
                             ui.label(format!(
-                                "Renders the whole mix as one WAV plus a CUE sheet with {n} track(s), one per marker. \
+                                "Renders the whole mix as one file plus a CUE sheet with {n} track(s), one per marker. \
                                  Ideal for live recordings: players and CD burners play it gaplessly."
                             ));
                             if self.project().markers.is_empty() {
@@ -2700,11 +2802,11 @@ impl KerfApp {
                     export_settings_ui(
                         ui,
                         self.doc.project(),
-                        &mut self.export_settings,
-                        matches!(kind, ExportKind::Markers | ExportKind::CueSheet).then_some(&mut self.cd_safe),
+                        &mut self.prefs.export,
+                        matches!(kind, ExportKind::Markers | ExportKind::CueSheet).then_some(&mut self.prefs.export_cd_safe),
                     );
                     ui.horizontal(|ui| {
-                        if ui.button("Export…").clicked() {
+                        if ui.add_enabled(names_ok, egui::Button::new("Export…")).clicked() {
                             run = Some(Box::new(move |app, ctx| app.start_export(ctx, kind)));
                             close = true;
                         }
@@ -2950,6 +3052,31 @@ impl KerfApp {
                         }
                     }
                 }
+                Dialog::ConfirmOverwrite(kind, target, existing) => {
+                    let folder = existing[0].parent().unwrap_or(Path::new(""));
+                    ui.label(format!(
+                        "{} file(s) already exist in {} and will be replaced:",
+                        existing.len(),
+                        folder.display()
+                    ));
+                    egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                        for p in existing.iter() {
+                            let name = p.strip_prefix(folder).unwrap_or(p);
+                            ui.label(egui::RichText::new(name.display().to_string()).monospace());
+                        }
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Replace").clicked() {
+                            let (kind, target) = (*kind, target.clone());
+                            run = Some(Box::new(move |app, ctx| app.run_export(ctx, kind, target)));
+                            close = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                    });
+                }
                 Dialog::Shortcuts(ed) => {
                     crate::shortcuts_ui::ui(ui, ed, &mut self.prefs, &mut self.keys);
                 }
@@ -2979,7 +3106,7 @@ impl KerfApp {
     /// sectors when CD-safe is on and the rate allows it.
     fn export_regions_for(&self, p: &Project) -> Vec<render::Region> {
         let regions = render::regions_from_markers(p, p.length());
-        match render::sector_len(p.sample_rate).filter(|_| self.cd_safe) {
+        match render::sector_len(p.sample_rate).filter(|_| self.prefs.export_cd_safe) {
             Some(sector) => render::snap_to_sectors(&regions, sector),
             None => regions,
         }
@@ -3234,8 +3361,9 @@ impl KerfApp {
                 Ok("prefs") => Some(Action::Preferences),
                 Ok("recent") => Some(Action::OpenRecent),
                 Ok("album") => Some(Action::Album),
+                Ok("shortcuts") => Some(Action::Shortcuts),
                 Ok("split-flac") => {
-                    self.export_settings = ExportSettings::FLAC_ALBUM;
+                    self.prefs.export = ExportSettings::FLAC_ALBUM;
                     Some(Action::Export(ExportKind::Markers))
                 }
                 Ok("precision") => {
@@ -3278,11 +3406,11 @@ impl KerfApp {
                     None
                 }
                 Ok("split-cd") => {
-                    self.export_settings = ExportSettings::AUDIO_CD;
+                    self.prefs.export = ExportSettings::AUDIO_CD;
                     Some(Action::Export(ExportKind::Markers))
                 }
                 Ok("split-raw") => {
-                    self.cd_safe = false;
+                    self.prefs.export_cd_safe = false;
                     Some(Action::Export(ExportKind::Markers))
                 }
                 _ => None,

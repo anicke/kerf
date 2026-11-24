@@ -444,21 +444,50 @@ pub fn regions_from_markers(project: &Project, end: Frame) -> Vec<Region> {
     regions
 }
 
-/// The files [`export_regions`] writes for `regions`, in order.
+/// The files [`export_regions`] writes for `regions`, in order: `dir` joined
+/// with `template` (see [`crate::naming`]) filled in for each track. Fails
+/// for a bad template or when two tracks would get the same file.
 pub fn region_paths(
+    project: &Project,
     regions: &[Region],
     dir: &Path,
-    base_name: &str,
+    template: &str,
+    project_name: &str,
     container: crate::encode::Container,
-) -> Vec<PathBuf> {
-    regions
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let name = sanitize_file_name(&format!("{:02} - {} - {}", i + 1, base_name, r.name));
-            dir.join(format!("{name}.{}", container.extension()))
-        })
-        .collect()
+) -> Result<Vec<PathBuf>> {
+    let a = &project.album;
+    let total = regions.len();
+    let mut paths: Vec<PathBuf> = Vec::with_capacity(total);
+    for (i, r) in regions.iter().enumerate() {
+        let fields = crate::naming::Fields {
+            number: i + 1,
+            total,
+            title: &r.name,
+            artist: r
+                .artist
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&a.artist),
+            album: &a.title,
+            year: &a.year,
+            genre: &a.genre,
+            project: project_name,
+        };
+        let rel = crate::naming::expand(template, &fields).map_err(Error::Naming)?;
+        let mut path = dir.join(rel);
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        path.set_file_name(format!("{name}.{}", container.extension()));
+        if let Some(j) = paths.iter().position(|p| *p == path) {
+            return Err(Error::Naming(format!(
+                "tracks {} and {} would both be {}; add {{nn}} to the name",
+                j + 1,
+                i + 1,
+                path.file_name().unwrap_or_default().to_string_lossy()
+            )));
+        }
+        paths.push(path);
+    }
+    Ok(paths)
 }
 
 /// The tracks [`export_stems`] exports (every unmuted track), with their files.
@@ -478,8 +507,8 @@ pub fn stem_paths<'a>(
         .collect()
 }
 
-/// Export each region to `dir` as `NN - <base> - <region>.<ext>`, tagged
-/// with its title, track number and the album's details.
+/// Export each region to its file in `paths` (from [`region_paths`]; folders
+/// are created), tagged with its title, track number and the album's details.
 ///
 /// Regions must be contiguous (as from [`regions_from_markers`]). The whole
 /// span is rendered and converted in **one pass** and cut into files at the
@@ -490,18 +519,21 @@ pub fn export_regions(
     project: &Project,
     regions: &[Region],
     opts: &RenderOptions,
-    dir: &Path,
-    base_name: &str,
+    paths: &[PathBuf],
     settings: ExportSettings,
     progress: Progress,
 ) -> Result<Vec<PathBuf>> {
     let (Some(first), Some(last)) = (regions.first(), regions.last()) else {
         return Ok(Vec::new());
     };
-    if regions.windows(2).any(|w| w[0].end != w[1].start) {
+    if regions.windows(2).any(|w| w[0].end != w[1].start) || paths.len() != regions.len() {
         return Err(Error::InvalidRange);
     }
-    let paths = region_paths(regions, dir, base_name, settings.container);
+    for dir in paths.iter().filter_map(|p| p.parent()) {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir)?;
+        }
+    }
     let (in_rate, out_rate) = (project.sample_rate, settings.rate_for(project.sample_rate));
     let channels = settings.channels_for(project.channels);
     // Where each file ends, in output frames from the start.
@@ -560,7 +592,7 @@ pub fn export_regions(
         let last = current.min(total - 1);
         w.finalize(Some(&track_tags(project, &regions[last], last, total)))?;
     }
-    Ok(paths)
+    Ok(paths.to_vec())
 }
 
 /// CUE sheet index time: `mm:ss:ff` with 75 frames per second (CD sectors).
@@ -995,8 +1027,15 @@ mod tests {
             &p,
             &regions,
             &RenderOptions::default(),
-            dir.path(),
-            "Live",
+            &region_paths(
+                &p,
+                &regions,
+                dir.path(),
+                crate::naming::DEFAULT_TRACK_NAMES,
+                "Live",
+                settings.container,
+            )
+            .unwrap(),
             settings,
             &mut |_| true,
         )
@@ -1099,8 +1138,15 @@ mod tests {
             &p,
             &regions,
             &RenderOptions::default(),
-            dir.path(),
-            "Live",
+            &region_paths(
+                &p,
+                &regions,
+                dir.path(),
+                crate::naming::DEFAULT_TRACK_NAMES,
+                "Live",
+                settings.container,
+            )
+            .unwrap(),
             settings,
             &mut |_| true,
         )
@@ -1157,8 +1203,15 @@ mod tests {
             &p,
             &regions,
             &RenderOptions::default(),
-            dir.path(),
-            "x",
+            &region_paths(
+                &p,
+                &regions,
+                dir.path(),
+                crate::naming::DEFAULT_TRACK_NAMES,
+                "x",
+                ExportSettings::default().container,
+            )
+            .unwrap(),
             ExportSettings::default(),
             &mut |_| true,
         );
@@ -1218,16 +1271,21 @@ mod tests {
             &p,
             &regions,
             &RenderOptions::default(),
-            dir.path(),
-            "Live",
+            &region_paths(
+                &p,
+                &regions,
+                dir.path(),
+                crate::naming::DEFAULT_TRACK_NAMES,
+                "Live",
+                settings.container,
+            )
+            .unwrap(),
             settings,
             &mut |_| true,
         )
         .unwrap();
         assert_eq!(paths.len(), 3);
-        assert!(paths[1]
-            .to_string_lossy()
-            .ends_with("02 - Live - Ballad.flac"));
+        assert!(paths[1].to_string_lossy().ends_with("02 - Ballad.flac"));
 
         let tag = |i: usize, k: &str| {
             let t = metaflac::Tag::read_from_path(&paths[i]).unwrap();

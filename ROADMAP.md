@@ -172,6 +172,20 @@ From the comparison with established editors:
 
 Size: about 3–4 days in total.
 
+## Export improvements
+
+From reviewing export against established editors.
+
+- ~~File-name templates~~ (done: `{nn} - {title}` by default; fields {nn} {num} {title} {artist}
+  {album} {year} {genre} {project}, `/` for folders; previewed in the dialog, clashes refused; also
+  `--names` in the CLI and `names` for MCP). The app also asks before replacing files and remembers
+  the export format and names.
+- Leave stretches out of a split (pre-show, chatter between songs): a tick-box per track in the
+  export dialog first; start/end regions later.
+- Lossy formats (MP3/Opus/AAC), pending open decision 3. AIFF.
+- Noise-shaped dither for 16-bit masters.
+- Smaller: stems that follow the selection; CUE pregaps (`INDEX 00`).
+
 ## Phase 7: Platform, packaging and open-source readiness
 
 - **CI on Windows, macOS and Linux** (build, test, clippy). Only Linux is tested so far.

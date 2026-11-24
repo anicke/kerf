@@ -50,6 +50,12 @@ pub struct Prefs {
     pub recent_projects: Vec<PathBuf>,
     /// Changed keyboard shortcuts: command id → keys (see `keymap`).
     pub shortcuts: crate::keymap::Overrides,
+    /// Last export format.
+    pub export: kerf_core::io::ExportSettings,
+    /// Snap split/CUE track boundaries to CD sectors (no sector boundary errors).
+    pub export_cd_safe: bool,
+    /// File names for Split at Markers (see `kerf_core::naming`).
+    pub track_names: String,
 }
 
 impl Default for Prefs {
@@ -72,6 +78,9 @@ impl Default for Prefs {
             follow: FollowMode::Page,
             recent_projects: Vec::new(),
             shortcuts: Default::default(),
+            export: Default::default(),
+            export_cd_safe: true,
+            track_names: kerf_core::naming::DEFAULT_TRACK_NAMES.into(),
         }
     }
 }
