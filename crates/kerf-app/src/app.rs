@@ -361,6 +361,7 @@ pub enum Action {
     ExtendToEnd,
     ToggleMarkersPanel,
     ToggleHistoryPanel,
+    ToggleStatsPanel,
     Preferences,
     Album,
     ZeroCrossings,
@@ -413,6 +414,7 @@ pub struct KerfApp {
     /// AI assistant access (MCP), when turned on in Preferences.
     pub assistant: Option<crate::assistant::Assistant>,
     pub meters: [f32; 2],
+    pub stats: crate::stats_panel::Stats,
     pub last_dir: Option<PathBuf>,
     /// Disk cache for decoded audio; `None` falls back to keeping audio in RAM.
     pub cache: Option<Arc<AudioCache>>,
@@ -467,6 +469,7 @@ impl KerfApp {
             drag: None,
             assistant: None,
             meters: [0.0; 2],
+            stats: Default::default(),
             last_dir: None,
             cache,
             title: String::new(),
@@ -953,6 +956,10 @@ impl KerfApp {
             }
             ToggleHistoryPanel => {
                 self.prefs.show_history_panel = !self.prefs.show_history_panel;
+                let _ = self.prefs.save();
+            }
+            ToggleStatsPanel => {
+                self.prefs.show_stats_panel = !self.prefs.show_stats_panel;
                 let _ = self.prefs.save();
             }
             ZeroCrossings => {
@@ -1719,6 +1726,7 @@ impl KerfApp {
             (cmd_shift, Key::ArrowRight, Action::ExtendNextEditPoint),
             (cmd_shift, Key::M, Action::ToggleMarkersPanel),
             (cmd_shift, Key::H, Action::ToggleHistoryPanel),
+            (cmd_shift, Key::I, Action::ToggleStatsPanel),
             (cmd_shift, Key::A, Action::Album),
             (cmd_shift, Key::O, Action::OpenRecent),
             (cmd, Key::ArrowLeft, Action::PrevEditPoint),
@@ -2243,6 +2251,15 @@ impl KerfApp {
                 }
                 if ui
                     .checkbox(
+                        &mut self.prefs.show_stats_panel,
+                        "Statistics panel (Ctrl+Shift+I)",
+                    )
+                    .changed()
+                {
+                    let _ = self.prefs.save();
+                }
+                if ui
+                    .checkbox(
                         &mut self.prefs.show_history_panel,
                         "History panel (Ctrl+Shift+H)",
                     )
@@ -2607,6 +2624,14 @@ impl KerfApp {
             true,
             "Markers panel (Ctrl+Shift+M)",
             Action::ToggleMarkersPanel,
+        );
+        add(
+            ui,
+            Icon::StatsPanel,
+            self.prefs.show_stats_panel,
+            true,
+            "Statistics panel (Ctrl+Shift+I)",
+            Action::ToggleStatsPanel,
         );
         add(
             ui,
@@ -3262,6 +3287,10 @@ impl eframe::App for KerfApp {
             }
             ctx.request_repaint();
         }
+        self.stats.poll_live(&mut self.player);
+        if self.prefs.show_stats_panel && self.player.is_playing() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let m = self.player.take_meters();
         for (cur, new) in self.meters.iter_mut().zip(m) {
             *cur = new.max(*cur * 0.85);
@@ -3273,23 +3302,35 @@ impl eframe::App for KerfApp {
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        let (markers, history) = (self.prefs.show_markers_panel, self.prefs.show_history_panel);
-        if markers || history {
+        let (markers, history, stats) = (
+            self.prefs.show_markers_panel,
+            self.prefs.show_history_panel,
+            self.prefs.show_stats_panel,
+        );
+        if markers || history || stats {
             egui::Panel::right("side")
                 .resizable(true)
                 .default_size(340.0)
                 .show(ui, |ui| {
+                    // Statistics on top, sized to fit; Markers fill the middle;
+                    // History below them, or filling the rest on its own.
+                    if stats && (markers || history) {
+                        egui::Panel::top("stats")
+                            .resizable(false)
+                            .show(ui, |ui| crate::stats_panel::show(self, ui));
+                    }
                     if markers && history {
-                        // History below the markers, sharing the side panel.
                         egui::Panel::bottom("history")
                             .resizable(true)
                             .default_size(ui.available_height() * 0.4)
                             .show(ui, |ui| crate::history_panel::show(self, ui));
+                    }
+                    if markers {
                         crate::markers_panel::show(self, ui);
-                    } else if markers {
-                        crate::markers_panel::show(self, ui);
-                    } else {
+                    } else if history {
                         crate::history_panel::show(self, ui);
+                    } else {
+                        crate::stats_panel::show(self, ui);
                     }
                 });
         }
@@ -4107,7 +4148,7 @@ Ctrl+M       normalize            Ctrl+G       gain
 I / O        fade in / out        Ctrl+R       render in place
 M            add marker           , / .        previous / next marker
 Ctrl+⇧M      markers panel        Ctrl+⇧H      history panel
-Ctrl+,       preferences
+Ctrl+⇧I      statistics panel     Ctrl+,       preferences
 Ctrl+↑ / ↓   vertical zoom        D            waveform in dB
 Shift+Z      selection to zero crossings
 Ctrl+E       export mix           Ctrl+⇧E      export split at markers

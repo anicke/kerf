@@ -13,6 +13,7 @@ mod nav;
 mod prefs;
 mod recent;
 mod recovery;
+mod stats_panel;
 mod timeline;
 
 fn main() -> eframe::Result {

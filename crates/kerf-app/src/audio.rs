@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
+use kerf_core::analysis::SegmentFilter;
 use kerf_core::render::{mix_into, RenderOptions};
 use kerf_core::{Frame, Project};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -123,6 +124,8 @@ pub struct Player {
     /// Speed of the current playback (1 = normal, negative = reverse).
     speed: f64,
     scrubbing: bool,
+    /// 100 ms K-weighted energies of what is heard, for the live loudness meter.
+    loudness: Option<Consumer<f64>>,
 }
 
 /// Output devices as `(id, description)`.
@@ -157,6 +160,7 @@ impl Default for Player {
             fallback_note: None,
             speed: 1.0,
             scrubbing: false,
+            loudness: None,
         }
     }
 }
@@ -168,9 +172,9 @@ impl Player {
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         format: cpal::SampleFormat,
-    ) -> Result<(cpal::Stream, Sender<Cmd>), String> {
+    ) -> Result<(cpal::Stream, Sender<Cmd>, Consumer<f64>), String> {
         let (tx, rx) = channel();
-        let (feeder, output) = pipeline(
+        let (feeder, output, loudness) = pipeline(
             rx,
             self.shared.clone(),
             config.sample_rate,
@@ -188,7 +192,7 @@ impl Player {
             .name("kerf-playback-feeder".into())
             .spawn(move || feeder.run())
             .map_err(|e| e.to_string())?;
-        Ok((stream, tx))
+        Ok((stream, tx, loudness))
     }
 
     pub fn is_playing(&self) -> bool {
@@ -212,6 +216,16 @@ impl Player {
     #[allow(dead_code)]
     pub fn underruns(&self) -> u64 {
         self.shared.underruns.load(Ordering::Relaxed)
+    }
+
+    /// Hand `f` each 100 ms K-weighted energy of the output heard since the
+    /// last call (see `kerf_core::analysis::Loudness`).
+    pub fn take_loudness(&mut self, mut f: impl FnMut(f64)) {
+        if let Some(rx) = &mut self.loudness {
+            while let Ok(z) = rx.pop() {
+                f(z);
+            }
+        }
     }
 
     /// Take the output peak levels (linear) accumulated since the last call.
@@ -383,7 +397,7 @@ impl Player {
         if let Some(n) = self.buffer_frames {
             config.buffer_size = cpal::BufferSize::Fixed(n);
         }
-        let (stream, tx) = match self.open_stream(&device, &config, format) {
+        let (stream, tx, loudness) = match self.open_stream(&device, &config, format) {
             Ok(ok) => ok,
             Err(e) if self.buffer_frames.is_some() => {
                 // Not every device accepts every buffer size: fall back.
@@ -398,6 +412,7 @@ impl Player {
         stream.play().map_err(|e| e.to_string())?;
         self.stream = Some(stream);
         self.tx = Some(tx);
+        self.loudness = Some(loudness);
         self.stream_project_rate = project_rate;
         self.device_rate = config.sample_rate;
         Ok(())
@@ -428,7 +443,7 @@ fn pipeline(
     shared: Arc<Shared>,
     device_rate: u32,
     channels: usize,
-) -> (Feeder, Output) {
+) -> (Feeder, Output, Consumer<f64>) {
     let channels = channels.max(1);
     let target = ((device_rate as f64 * READ_AHEAD_SECS) as usize / BLOCK).max(4);
     // Twice the read-ahead: after a seek or edit, fresh audio can queue up
@@ -436,6 +451,8 @@ fn pipeline(
     let capacity = 2 * target + 2;
     let (sample_tx, sample_rx) = RingBuffer::new(capacity * BLOCK * channels);
     let (mark_tx, mark_rx) = RingBuffer::new(capacity);
+    // A minute of segments: plenty even if the UI stalls.
+    let (loud_tx, loud_rx) = RingBuffer::new(600);
     let feeder = Feeder {
         rx,
         shared: shared.clone(),
@@ -459,8 +476,10 @@ fn pipeline(
         current: None,
         played: 0,
         skip: 0,
+        loudness: SegmentFilter::new(device_rate, channels),
+        loudness_tx: loud_tx,
     };
-    (feeder, output)
+    (feeder, output, loud_rx)
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +924,8 @@ struct Output {
     played: usize,
     /// Device frames to skip silently (catching up after an edit).
     skip: usize,
+    loudness: SegmentFilter,
+    loudness_tx: Producer<f64>,
 }
 
 impl Output {
@@ -978,6 +999,12 @@ impl Output {
                     let c = k % ch;
                     if c < 2 {
                         peaks[c] = peaks[c].max(v.abs());
+                    }
+                    self.loudness.sample(c, v);
+                    if c == ch - 1 {
+                        if let Some(z) = self.loudness.end_frame() {
+                            let _ = self.loudness_tx.push(z);
+                        }
                     }
                     out[i * ch + k] = T::from_sample(v);
                 }
@@ -1114,17 +1141,19 @@ mod tests {
         shared: Arc<Shared>,
         feeder: Feeder,
         output: Output,
+        loudness: Consumer<f64>,
     }
 
     fn rig(device_rate: u32) -> Rig {
         let (tx, rx) = channel();
         let shared = Arc::new(Shared::default());
-        let (feeder, output) = pipeline(rx, shared.clone(), device_rate, 1);
+        let (feeder, output, loudness) = pipeline(rx, shared.clone(), device_rate, 1);
         Rig {
             tx,
             shared,
             feeder,
             output,
+            loudness,
         }
     }
 
@@ -1172,6 +1201,31 @@ mod tests {
             "stopped at the end"
         );
         assert_eq!(r.shared.underruns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn live_loudness_gets_a_segment_per_100_ms_played() {
+        // 8 kHz output (the test project is 1 kHz; K-weighting needs a real rate).
+        let mut r = rig(8000);
+        r.play(0, 2000);
+        for _ in 0..5 {
+            r.pull(800);
+            r.pump();
+        }
+        // (The test ramp is nearly DC, which K-weighting removes, so only
+        // the segment timing is checked here; the levels are tested in core.)
+        let mut segments = Vec::new();
+        while let Ok(z) = r.loudness.pop() {
+            segments.push(z);
+        }
+        assert_eq!(segments.len(), 5);
+        assert!(segments.iter().all(|z| z.is_finite() && *z >= 0.0));
+        // Stopped: silence is output but not measured.
+        r.shared.generation.fetch_add(1, Ordering::AcqRel);
+        r.shared.playing.store(false, Ordering::Relaxed);
+        r.tx.send(Cmd::Stop).unwrap();
+        r.pull(4000);
+        assert!(r.loudness.pop().is_err());
     }
 
     #[test]

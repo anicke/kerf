@@ -788,33 +788,29 @@ impl Session {
 
     fn analyze(&self, a: Frame, b: Frame, tracks: Vec<TrackId>, progress: Progress) -> OpResult {
         let p = self.project();
-        let mut meter = crate::analysis::Meter::new(p.sample_rate, p.channels as usize);
-        let mut clipped = 0u64;
-        let total = (b - a) as f64;
-        let mut done_frames = 0usize;
-        render::for_each_chunk(p, a, b, &RenderOptions::tracks(tracks), |chunk, n| {
-            meter.push(chunk, n);
-            clipped += chunk
-                .iter()
-                .map(|c| c[..n].iter().filter(|s| s.abs() > 1.0).count() as u64)
-                .sum::<u64>();
-            done_frames += n;
-            Ok(progress(done_frames as f64 / total))
-        })?;
+        let meter =
+            crate::analysis::measure_range(p, a, b, &RenderOptions::tracks(tracks), progress)?;
+        let clipped = meter.clipped_samples();
+        let l = meter.loudness();
         let levels = Levels {
             start: TimePos::new(a, p.sample_rate),
             end: TimePos::new(b, p.sample_rate),
             peak_db: db(meter.peak_db()),
+            true_peak_db: meter.true_peak_db().and_then(db),
             rms_db: db(meter.rms_db()),
             lufs: meter.integrated_lufs().and_then(db),
+            max_momentary_lufs: l.max_momentary().and_then(db),
+            max_short_term_lufs: l.max_short_term().and_then(db),
+            loudness_range_lu: l.range().and_then(db),
             clipped_samples: clipped,
         };
         let show = |v: Option<f64>| v.map_or("–".into(), |v| format!("{v:.1}"));
         Ok(Response {
             summary: format!(
-                "{}: peak {} dBFS, RMS {} dBFS, {} LUFS{}",
+                "{}: peak {} dBFS, true peak {} dBTP, RMS {} dBFS, {} LUFS{}",
                 self.fmt_span(a, b),
                 show(levels.peak_db),
+                show(levels.true_peak_db),
                 show(levels.rms_db),
                 show(levels.lufs),
                 if clipped > 0 {

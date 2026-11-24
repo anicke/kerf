@@ -48,7 +48,7 @@ enum Cmd {
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
     },
-    /// Measure peak, RMS, loudness (LUFS) and clipping.
+    /// Measure peak, true peak, RMS, loudness (LUFS, range) and clipping.
     Analyze {
         #[arg(required = true)]
         inputs: Vec<PathBuf>,

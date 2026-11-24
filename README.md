@@ -127,7 +127,7 @@ kerf-cli split show.wav --songs 14 --setlist setlist.txt --artist "The Band" --a
     --loudness -16 --preset cd --cue --out album/ --save show.kerf
 
 kerf-cli detect show.wav --songs 14                 # just list the song starts
-kerf-cli analyze *.wav                              # peak, RMS, LUFS and clipping per file
+kerf-cli analyze *.wav                              # peak, true peak, RMS, LUFS, range and clipping per file
 kerf-cli info show.kerf                             # tracks, clips, markers, album details
 kerf-cli export *.flac --preset cd --out cd/        # batch convert
 kerf-cli export show.kerf --kind tracks --preset flac --out flac/ --dry-run

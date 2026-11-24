@@ -44,6 +44,7 @@ pub enum Icon {
     ZeroCrossings,
     MarkersPanel,
     HistoryPanel,
+    StatsPanel,
 }
 
 /// A fixed-size button showing `icon`, `height` tall (to match its
@@ -405,6 +406,17 @@ fn paint(p: &egui::Painter, c: Pos2, icon: Icon, color: Color32, bg: Color32) {
                     pos2(c.x - 6.5, y + 1.8),
                 ]));
                 p.add(line(vec![pos2(c.x - 1.5, y), pos2(c.x + 6.5, y)], 1.5));
+            }
+        }
+        Icon::StatsPanel => {
+            // A level meter: three bars of rising height on a baseline.
+            let base = c.y + 6.5;
+            for (dx, h) in [(-5.0, 5.0), (0.0, 9.0), (5.0, 13.0)] {
+                p.rect_filled(
+                    Rect::from_min_max(pos2(c.x + dx - 1.6, base - h), pos2(c.x + dx + 1.6, base)),
+                    0.5,
+                    color,
+                );
             }
         }
         Icon::HistoryPanel => {

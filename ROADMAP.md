@@ -15,7 +15,8 @@ Shipped: 32-bit float non-destructive engine with unlimited undo; sample-exact s
 trim, fades and crossfades; peak, RMS and BS.1770 loudness normalization; memory-mapped disk cache
 (flat RAM use); song-start detection for live recordings with setlist naming; CD-safe split and CUE
 export with an Audio CD preset; keyboard navigation, markers panel, crash recovery, preferences and
-device selection; scrubbing and J/K/L shuttle; an undo history panel; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
+device selection; scrubbing and J/K/L shuttle; an undo history panel; a statistics panel with true
+peak, loudness range and a live loudness meter; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
 FLAC export, album loudness and the Album window; a JSON operations layer and the `kerf-cli`
 command-line tool; the `kerf-mcp` MCP server with waveform images, also working live inside the app; FFmpeg as an
 optional decoder.
@@ -158,7 +159,10 @@ From the comparison with established editors:
   8× either way, K+J/L for half speed; loop moved to Shift+L).
 - ~~Undo history panel~~ (done: *View → History panel* or Ctrl+Shift+H; click any step to go
   back or forward to it, undone steps stay listed until the next edit, the saved state is marked).
-- Statistics and loudness panel: selection peak, true peak, RMS, LUFS, plus a live loudness meter.
+- ~~Statistics and loudness panel~~ (done: *View → Statistics panel* or Ctrl+Shift+I; peak, true
+  peak, RMS, integrated/max momentary/max short-term loudness, loudness range and clipping of the
+  selection or project, measured in the background; live momentary, short-term and integrated
+  loudness while playing. True peak and loudness range are also in `analyze` for the CLI and MCP).
 - ~~Recent files~~ (done: *File → Open Recent* and Ctrl+Shift+O).
 - Customisable shortcuts.
 

@@ -22,6 +22,7 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(last_id, pos));
 
     egui::ScrollArea::vertical()
+        .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;

@@ -43,6 +43,7 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
 
     let stripe = ui.visuals().faint_bg_color;
     egui::ScrollArea::vertical()
+        .min_scrolled_height(0.0)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             for (i, m) in p.markers.iter().enumerate() {

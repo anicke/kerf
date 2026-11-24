@@ -267,7 +267,7 @@ pub enum Request {
     // --- Inspect ------------------------------------------------------------
     /// Tracks, clips, markers, album details, format and length.
     Info,
-    /// Peak, RMS, loudness and clipping of a range as heard.
+    /// Peak, true peak, RMS, loudness (integrated, max momentary and short-term, range) and clipping of a range as heard.
     Analyze {
         #[serde(default)]
         start: Option<Time>,
@@ -618,9 +618,23 @@ pub struct MarkerInfo {
 pub struct Levels {
     pub start: TimePos,
     pub end: TimePos,
+    /// Highest sample (dBFS).
     pub peak_db: Option<f64>,
+    /// Highest peak between samples too (dBTP, BS.1770 true peak).
+    #[serde(default)]
+    pub true_peak_db: Option<f64>,
     pub rms_db: Option<f64>,
+    /// Integrated loudness (LUFS).
     pub lufs: Option<f64>,
+    /// Loudest 400 ms (LUFS).
+    #[serde(default)]
+    pub max_momentary_lufs: Option<f64>,
+    /// Loudest 3 s (LUFS).
+    #[serde(default)]
+    pub max_short_term_lufs: Option<f64>,
+    /// Loudness range (LU, EBU Tech 3342): how much the level varies.
+    #[serde(default)]
+    pub loudness_range_lu: Option<f64>,
     /// Samples above 0 dBFS: these clip when exported to an integer format.
     pub clipped_samples: u64,
 }

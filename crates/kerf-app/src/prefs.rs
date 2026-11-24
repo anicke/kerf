@@ -35,6 +35,7 @@ pub struct Prefs {
     pub autosave_secs: u64,
     pub show_markers_panel: bool,
     pub show_history_panel: bool,
+    pub show_stats_panel: bool,
     pub time_format: kerf_core::util::TimeFormat,
     /// Put selection edges and split points on zero crossings (avoids clicks).
     pub snap_zero_crossings: bool,
@@ -60,6 +61,7 @@ impl Default for Prefs {
             autosave_secs: 60,
             show_markers_panel: false,
             show_history_panel: false,
+            show_stats_panel: false,
             time_format: kerf_core::util::TimeFormat::MinSec,
             snap_zero_crossings: false,
             ffmpeg: Default::default(),
