@@ -111,7 +111,7 @@ done, what's next, and known limitations.
 
 ## Building
 
-Requires Rust 1.95+ (pinned to 1.96 by `rust-toolchain.toml`). Windows and macOS need nothing
+Requires Rust 1.100 (pinned by `rust-toolchain.toml`; rustup installs it automatically). Windows and macOS need nothing
 else. On Linux, install the audio and font development libraries first:
 
 ```sh

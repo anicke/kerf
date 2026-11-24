@@ -8,7 +8,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 # Not published to crates.io: Kerf ships as an app.
 publish = false
-rust-version = "1.95"
+rust-version = "1.100"
 
 [profile.dev]
 # Audio code is unusable unoptimized; keep debug builds snappy.

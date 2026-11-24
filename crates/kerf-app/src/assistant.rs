@@ -125,7 +125,7 @@ impl KerfApp {
         let Some(a) = &mut self.assistant else {
             return;
         };
-        let mut pending: Vec<EditorRequest> = a.held.drain(..).collect();
+        let mut pending: Vec<EditorRequest> = std::mem::take(&mut a.held);
         pending.extend(a.inbox.try_iter());
         if pending.is_empty() {
             return;

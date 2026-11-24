@@ -237,7 +237,9 @@ impl PeakCache {
                 let f = |b: &[u8]| f32::from_le_bytes(b.try_into().unwrap());
                 chans.push(
                     bytes
-                        .chunks_exact(8)
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
                         .map(|b| [f(&b[..4]), f(&b[4..])])
                         .collect(),
                 );
