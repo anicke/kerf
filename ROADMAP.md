@@ -190,11 +190,15 @@ From reviewing export against established editors.
 
 ## Phase 7: Platform, packaging and open-source readiness
 
-- **CI on Windows, macOS and Linux** (build, test, clippy). Only Linux is tested so far.
+- ~~**CI on Windows, macOS and Linux**~~ (done: fmt, clippy and cargo-deny on Linux; tests on Linux
+  for every change, and on Windows and macOS for `main`, manual runs and PRs labelled `full-ci`.
+  Actions pinned to SHAs, cache written only by `main`, job timeouts, Dependabot with a 7-day
+  cooldown; the repository allows only GitHub's actions and `Swatinem/rust-cache`, SHA-pinned).
 - **Packages:** Linux (AppImage and/or Flatpak), macOS (signed .dmg), Windows (installer).
 - **Licence** (decision needed; `Cargo.toml` currently says "MIT OR Apache-2.0" as a placeholder)
   and licence files.
-- **Dependency licence checks** with `cargo-deny` in CI. Symphonia is MPL-2.0 (compatible).
+- ~~**Dependency licence checks**~~ (done: `cargo-deny` in CI, `deny.toml`; revisit the allowed
+  licences once Kerf's own licence is chosen).
 - **AAC decoding as a build option,** since AAC may involve patent licensing in some countries
   (MP3's patents have expired).
 - Contributor docs: architecture overview, CONTRIBUTING.md.

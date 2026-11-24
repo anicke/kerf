@@ -4,6 +4,7 @@ description = "Kerf - a fast, precise, cross-platform audio editor"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 rust-version.workspace = true
 
 [[bin]]

@@ -6,6 +6,8 @@ members = ["crates/kerf-core", "crates/kerf-app", "crates/kerf-cli", "crates/ker
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+# Not published to crates.io: Kerf ships as an app.
+publish = false
 rust-version = "1.95"
 
 [profile.dev]
