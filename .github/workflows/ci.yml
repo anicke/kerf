@@ -16,10 +16,15 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request replaces a running check.
+# A newer push to a pull request replaces its running check. Runs on main are never
+# cancelled, so each one finishes and saves the cache. A label other than full-ci being
+# added (Dependabot adds two as it opens a pull request) runs nothing and gets a group of
+# its own, so it can't cancel the real check.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'labeled'
+    && github.event.label.name != 'full-ci' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
