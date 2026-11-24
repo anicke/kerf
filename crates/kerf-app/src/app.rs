@@ -3610,8 +3610,12 @@ fn export_settings_ui(
                             let tip = match d {
                                 Dither::None => "Plain rounding: quiet passages and fade-outs get distortion",
                                 Dither::Tpdf => "Turns rounding distortion into a steady, very low hiss",
-                                Dither::Light => "Moves the hiss away from the middle frequencies where hearing is most sensitive",
-                                Dither::Strong => "Psychoacoustic shaping: about 25 dB less hiss around 3–4 kHz, more above 15 kHz",
+                                Dither::Light => "Moves the hiss away from the middle frequencies where hearing is most sensitive. \
+                                                  Best for final 16-bit masters; use TPDF for files that will be encoded \
+                                                  (MP3, AAC, streaming) or processed further.",
+                                Dither::Strong => "Psychoacoustic shaping: about 25 dB less hiss around 3–4 kHz, more above 15 kHz. \
+                                                   Best for final 16-bit masters; use TPDF for files that will be encoded \
+                                                   (MP3, AAC, streaming) or processed further.",
                             };
                             let enabled = shaping_ok || matches!(d, Dither::None | Dither::Tpdf);
                             ui.add_enabled_ui(enabled, |ui| {
@@ -3662,6 +3666,19 @@ fn export_settings_ui(
         };
         if let Some(n) = note {
             ui.label(egui::RichText::new(n).weak().small());
+        }
+        if matches!(
+            effective,
+            kerf_core::dither::Dither::Light | kerf_core::dither::Dither::Strong
+        ) {
+            ui.label(
+                egui::RichText::new(
+                    "Noise shaping is best for final 16-bit masters (CD). For files that will be encoded \
+                     (MP3, AAC, streaming) or processed further, choose TPDF.",
+                )
+                .weak()
+                .small(),
+            );
         }
     }
     if s.container == Container::Flac {
