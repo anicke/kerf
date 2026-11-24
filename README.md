@@ -7,9 +7,9 @@ scripts and AI assistants can do the same work.
 
 ![Kerf with a concert split into songs, the Statistics and Markers panels open](docs/screenshot.png)
 
-**Status:** early development. Prebuilt downloads are on the
-[Releases](https://github.com/anicke/kerf/releases) page once a version is tagged (see
-[Installing](#installing)); otherwise build from source (below). CI builds
+**Status:** early development. Download a build from the
+[Releases](https://github.com/anicke/kerf/releases) page (see [Installing](#installing)) or
+build from source (below). CI builds
 and tests every change on Linux, Windows and macOS, but day-to-day use so far has been on Linux,
 and playback hasn't been tried on many audio devices. Song detection is tuned on synthetic
 recordings; reports from real concerts are very welcome. See [ROADMAP.md](ROADMAP.md) for what's
