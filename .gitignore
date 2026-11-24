@@ -1,3 +1,15 @@
 /target
 *.partial
 *.kerf.tmp
+
+# Working files kept beside the code while testing: projects and recordings at the
+# top level are never part of the repository.
+/*.kerf
+/*.wav
+/*.flac
+/*.mp3
+/*.m4a
+/*.ogg
+/*.opus
+/*.aif
+/*.aiff

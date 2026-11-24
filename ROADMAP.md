@@ -195,13 +195,16 @@ From reviewing export against established editors.
   Actions pinned to SHAs, cache written only by `main`, job timeouts, Dependabot with a 7-day
   cooldown; the repository allows only GitHub's actions and `Swatinem/rust-cache`, SHA-pinned).
 - **Packages:** Linux (AppImage and/or Flatpak), macOS (signed .dmg), Windows (installer).
-- **Licence** (decision needed; `Cargo.toml` currently says "MIT OR Apache-2.0" as a placeholder)
-  and licence files.
+- ~~**Licence**~~ (done: MIT OR Apache-2.0, with `LICENSE-MIT` and `LICENSE-APACHE`).
 - ~~**Dependency licence checks**~~ (done: `cargo-deny` in CI, `deny.toml`; revisit the allowed
   licences once Kerf's own licence is chosen).
 - **AAC decoding as a build option,** since AAC may involve patent licensing in some countries
   (MP3's patents have expired).
-- Contributor docs: architecture overview, CONTRIBUTING.md.
+- ~~Contributor docs~~ (done: `CONTRIBUTING.md` with how the code is organised, `SECURITY.md`).
+- **Going public:** run Windows and macOS on every pull request again (minutes are free for public
+  repositories); turn on private vulnerability reporting, Dependabot alerts, secret scanning with
+  push protection, approval for first-time contributors' workflows, and rules blocking force-pushes
+  to `main`.
 
 ## Later and ambitious
 
@@ -224,7 +227,7 @@ From reviewing export against established editors.
 
 ## Open decisions
 
-1. Licence choice before making the repository public.
+1. ~~Licence choice~~ (decided: MIT OR Apache-2.0).
 2. Album loudness default target (-14 LUFS streaming vs. -16 or lower for dynamic live music).
 3. Lossy export: MP3 via LAME (LGPL) and/or Opus; also AAC, DDP for CD replication.
 4. Whether the in-app MCP server should also accept connections from other machines (default:

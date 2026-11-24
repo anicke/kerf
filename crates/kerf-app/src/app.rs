@@ -3362,6 +3362,11 @@ impl KerfApp {
                 Ok("recent") => Some(Action::OpenRecent),
                 Ok("album") => Some(Action::Album),
                 Ok("shortcuts") => Some(Action::Shortcuts),
+                // The whole project, tracks filling the window (README screenshots).
+                Ok("fit") => {
+                    self.view.fit_tracks(self.doc.project().tracks.len());
+                    Some(Action::ZoomFit)
+                }
                 Ok("split-flac") => {
                     self.prefs.export = ExportSettings::FLAC_ALBUM;
                     Some(Action::Export(ExportKind::Markers))

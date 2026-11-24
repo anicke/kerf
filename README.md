@@ -1,10 +1,17 @@
 # Kerf
 
 A fast, precise, cross-platform audio editor written in Rust (Windows, macOS, Linux).
-Focused purely on editing: no plugins or effects, just careful, non-destructive editing.
+Focused purely on editing: no plugins or effects, just careful, non-destructive editing. Built
+for turning live recordings into finished albums, with a command-line tool and an MCP server so
+scripts and AI assistants can do the same work.
 
-See [ROADMAP.md](ROADMAP.md) for what's planned: finishing live albums end to end, a CLI, and an
-MCP server so AI assistants can edit alongside you.
+![Kerf with a concert split into songs, the Statistics and Markers panels open](docs/screenshot.png)
+
+**Status:** early development. There are no releases yet, so build from source (below). CI builds
+and tests every change on Linux, Windows and macOS, but day-to-day use so far has been on Linux,
+and playback hasn't been tried on many audio devices. Song detection is tuned on synthetic
+recordings; reports from real concerts are very welcome. See [ROADMAP.md](ROADMAP.md) for what's
+done, what's next, and known limitations.
 
 ## Highlights
 
@@ -21,7 +28,7 @@ MCP server so AI assistants can edit alongside you.
   Works on a selection or whole tracks.
 - **Rendering and track splits.** Export the mix or a selection; split an album recording into one
   file per region between markers; export each track as a stem; or render a track in place to
-  consolidate edits. WAV output in 16/24/32-bit PCM or 32-bit float; split files named from a
+  consolidate edits. WAV (16/24/32-bit PCM or 32-bit float) or FLAC output; split files named from a
   template such as `{nn} - {title}` or `{artist} - {album}/{nn} {title}`. Dither is TPDF, optionally
   noise-shaped (light, or psychoacoustic "strong") for 16-bit; silence and audio that is already
   exact at the target depth are left untouched, so unedited 16-bit audio exports bit-identical.
@@ -86,8 +93,16 @@ MCP server so AI assistants can edit alongside you.
 - **Crash recovery.** Unsaved work is snapshotted every minute (configurable). If Kerf doesn't close
   normally, it offers to recover the work on the next start. Snapshots are tiny: audio is
   referenced, and rendered audio stays in the cache.
-- **Markers panel** (*View → Markers panel*, Ctrl+Shift+M): every marker in a list. Jump to it,
-  rename it in place, select the song from one marker to the next, or delete it.
+- **Panels** (*View* menu), side by side on the right:
+  - **Markers** (Ctrl+Shift+M): every marker in a list. Jump to it, rename it in place, select the
+    song from one marker to the next, or delete it.
+  - **Statistics** (Ctrl+Shift+I): peak, true peak (BS.1770), RMS, integrated loudness, loudest
+    momentary and short-term loudness, loudness range (EBU Tech 3342) and clipped samples of the
+    selection or the whole project, measured in the background as you edit. A live meter shows
+    momentary, short-term and integrated loudness while playing.
+  - **History** (Ctrl+Shift+H): every undo step; click one to go back or forward to it.
+- **Keyboard shortcuts** can be changed in *Edit → Keyboard Shortcuts…*: press keys to add one,
+  reset one command or all. Menus and tooltips always show the keys as bound.
 - **Audio device and preferences** (*Edit → Preferences…*, Ctrl+,): output device, buffer size,
   Space behaviour, preview length and recovery interval. Stored in the platform config folder
   (`KERF_CONFIG_DIR` overrides it).
@@ -96,7 +111,13 @@ MCP server so AI assistants can edit alongside you.
 
 ## Building
 
-Requires Rust 1.95+ (pinned to 1.96 by `rust-toolchain.toml`).
+Requires Rust 1.95+ (pinned to 1.96 by `rust-toolchain.toml`). Windows and macOS need nothing
+else. On Linux, install the audio and font development libraries first:
+
+```sh
+sudo apt install pkg-config libasound2-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev  # Debian, Ubuntu
+sudo dnf install pkgconf-pkg-config alsa-lib-devel fontconfig-devel libxkbcommon-devel wayland-devel  # Fedora
+```
 
 ```sh
 cargo run --release -p kerf              # launch
@@ -114,8 +135,6 @@ unused. *File → Audio Cache…* shows its size and frees everything the open p
 undo history) isn't using. The cache can always be deleted safely. It uses about the same space as the audio at
 32-bit float (about 1.4 GB per hour of stereo at 48 kHz). If no cache folder can be created, Kerf
 falls back to keeping audio in memory.
-
-On Linux, building needs the ALSA development headers (`libasound2-dev` / `alsa-lib-devel`).
 
 ## Command line
 
@@ -214,13 +233,15 @@ for trying song-start detection.
 | M | Add marker | , / . | Previous / next marker |
 | + / − / Z | Zoom in / out / to selection | Ctrl+F | Zoom to fit |
 | Ctrl+Shift+M | Markers panel | Ctrl+, | Preferences |
+| Ctrl+Shift+I | Statistics panel | Ctrl+Shift+H | History panel |
 | Ctrl+Shift+A | Album details and loudness | | |
 | N | Toggle snap | Ctrl+E / Ctrl+Shift+E | Export mix / split at markers |
 | Ctrl+↑ / ↓ | Vertical zoom | D | Waveform in dB |
 | Shift+Z | Selection to zero crossings | Double-click | Select clip, or song between markers |
 | Alt+↑ / ↓ | Taller / shorter tracks (selected, or all) | Ctrl+Shift+O | Open a recent project |
 
-Space and Shift+Space can be swapped in Preferences. J/K/L work like the shuttle keys of video
+These are the defaults: change any of them in *Edit → Keyboard Shortcuts…*. Space and
+Shift+Space can be swapped in Preferences. J/K/L work like the shuttle keys of video
 editors: speed changes the pitch, as with tape.
 
 Mouse: drag in a track to select time (across tracks). Drag a clip's title bar to move it, even to
@@ -234,3 +255,22 @@ Drag the line under a track (in its header or waveform) to change its height; ho
 every track, double-click the line to reset it. *View → Fit Tracks to Window* shares the space
 evenly.
 Drag and drop files onto the window.
+
+## Contributing
+
+Bug reports, real-world recordings that trip up song detection, and pull requests are welcome.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test and send changes.
+
+## Security
+
+Please report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md), not in a
+public issue.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
+Kerf by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
+additional terms or conditions.
