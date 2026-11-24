@@ -190,10 +190,10 @@ From reviewing export against established editors.
 
 ## Phase 7: Platform, packaging and open-source readiness
 
-- ~~**CI on Windows, macOS and Linux**~~ (done: fmt, clippy and cargo-deny on Linux; tests on Linux
-  for every change, and on Windows and macOS for `main`, manual runs and PRs labelled `full-ci`.
-  Actions pinned to SHAs, cache written only by `main`, job timeouts, Dependabot with a 7-day
-  cooldown; the repository allows only GitHub's actions and `Swatinem/rust-cache`, SHA-pinned).
+- ~~**CI on Windows, macOS and Linux**~~ (done: fmt, clippy and cargo-deny on Linux; tests on Linux,
+  Windows and macOS for every push to `main` and pull request. Actions pinned to SHAs, cache
+  written only by `main`, job timeouts, Dependabot with a 7-day cooldown; the repository allows
+  only GitHub's actions and `Swatinem/rust-cache`, SHA-pinned).
 - **Packages:** Linux (AppImage and/or Flatpak), macOS (signed .dmg), Windows (installer).
 - ~~**Licence**~~ (done: MIT OR Apache-2.0, with `LICENSE-MIT` and `LICENSE-APACHE`).
 - ~~**Dependency licence checks**~~ (done: `cargo-deny` in CI, `deny.toml`; revisit the allowed
@@ -201,10 +201,9 @@ From reviewing export against established editors.
 - **AAC decoding as a build option,** since AAC may involve patent licensing in some countries
   (MP3's patents have expired).
 - ~~Contributor docs~~ (done: `CONTRIBUTING.md` with how the code is organised, `SECURITY.md`).
-- **Going public:** run Windows and macOS on every pull request again (minutes are free for public
-  repositories); turn on private vulnerability reporting, Dependabot alerts, secret scanning with
-  push protection, approval for first-time contributors' workflows, and rules blocking force-pushes
-  to `main`.
+- ~~**Going public**~~ (done 2026-11-24: public, with private vulnerability reporting, Dependabot
+  alerts and security updates, secret scanning with push protection, approval for outside
+  contributors' workflows, and a ruleset blocking force-pushes to and deletion of `main`).
 
 ## Later and ambitious
 

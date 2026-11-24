@@ -1,15 +1,13 @@
 name: CI
 
-# Kerf is private, so Actions minutes are billed (Windows ×2, macOS ×10). Linux checks
-# every change; Windows and macOS run on main, by hand, and on pull requests labelled
-# `full-ci` (for changes to paths, audio, file dialogs or shortcuts). Drafts and
-# documentation-only changes don't run at all.
+# Every push to main and every pull request is checked on Linux, Windows and macOS.
+# Drafts and documentation-only changes don't run.
 on:
   push:
     branches: [main]
     paths-ignore: ["**.md", "docs/**", "LICENSE*"]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore: ["**.md", "docs/**", "LICENSE*"]
   workflow_dispatch:
 
@@ -17,31 +15,23 @@ permissions:
   contents: read
 
 # A newer push to a pull request replaces its running check. Runs on main are never
-# cancelled, so each one finishes and saves the cache. A label other than full-ci being
-# added (Dependabot adds two as it opens a pull request) runs nothing and gets a group of
-# its own, so it can't cancel the real check.
+# cancelled, so each one finishes and saves the cache.
 concurrency:
-  group: >-
-    ${{ github.workflow }}-${{ github.ref }}${{ github.event.action == 'labeled'
-    && github.event.label.name != 'full-ci' && format('-{0}', github.run_id) || '' }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   RUSTFLAGS: -D warnings
-  # Pull requests read the cache but only main writes it, so a pull request can't
-  # put anything in front of main's builds.
+  # Pull requests read the cache but only main writes it, so a pull request (from a fork,
+  # too) can't put anything in front of main's builds.
   SAVE_CACHE: ${{ github.ref == 'refs/heads/main' }}
 
-# Every job skips drafts, and label events other than adding full-ci (job-level `if`
-# can't share a variable, so the condition is repeated).
 jobs:
   lint:
     name: fmt + clippy
-    if: >-
-      github.event_name != 'pull_request' || (!github.event.pull_request.draft
-      && (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -61,39 +51,14 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked
 
-  test-linux:
-    name: test (ubuntu-latest)
-    if: >-
-      github.event_name != 'pull_request' || (!github.event.pull_request.draft
-      && (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: rustup toolchain install
-      - name: Install Linux libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libasound2-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ env.SAVE_CACHE }}
-      - run: cargo test --workspace --locked
-
-  test-other:
+  test:
     name: test (${{ matrix.os }})
-    # Not on pull requests unless labelled full-ci (and not a draft).
-    if: >-
-      github.event_name != 'pull_request' || (!github.event.pull_request.draft
-      && contains(github.event.pull_request.labels.*.name, 'full-ci')
-      && (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    if: ${{ !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          - { os: ubuntu-latest, timeout: 30 }
           - { os: windows-latest, timeout: 45 }
           - { os: macos-latest, timeout: 30 }
     runs-on: ${{ matrix.os }}
@@ -103,6 +68,12 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup toolchain install
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ env.SAVE_CACHE }}
@@ -110,9 +81,7 @@ jobs:
 
   deny:
     name: cargo-deny
-    if: >-
-      github.event_name != 'pull_request' || (!github.event.pull_request.draft
-      && (github.event.action != 'labeled' || github.event.label.name == 'full-ci'))
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

@@ -17,9 +17,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo deny check                  # licences and advisories (cargo install cargo-deny)
 ```
 
-CI runs the same checks. Linux runs on every pull request; Windows and macOS run on `main`, and
-on a pull request once it has the `full-ci` label (ask for it if your change touches paths, audio
-playback, file dialogs or keyboard handling).
+CI runs the same checks on Linux, Windows and macOS for every pull request. Workflows from
+contributors outside the project start once a maintainer approves them.
 
 ## How the code is organised
 
