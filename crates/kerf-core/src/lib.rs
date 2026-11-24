@@ -23,6 +23,7 @@ pub mod buffer;
 pub mod cache;
 pub mod decode;
 pub mod detect;
+pub mod dither;
 pub mod document;
 pub mod edit;
 pub mod encode;

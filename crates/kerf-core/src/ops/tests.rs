@@ -345,7 +345,10 @@ fn cd_export_reports_sector_errors_unless_cd_safe() {
         json!({"op": "export", "path": dir.path(), "kind": "tracks", "preset": "cd", "dry_run": true}),
     );
     assert_eq!(r["sector_errors"], 0);
-    assert_eq!(r["format"], "WAV 16-bit PCM, 44100 Hz, 2 ch, dithered");
+    assert_eq!(
+        r["format"],
+        "WAV 16-bit PCM, 44100 Hz, 2 ch, dithered with light noise shaping"
+    );
 }
 
 #[test]
@@ -492,4 +495,61 @@ fn sessions_wrap_existing_documents_with_labelled_steps() {
             "AI: Add marker \"M\" at 0:01.000"
         ])
     );
+}
+
+/// Unedited 16-bit audio exported at 16 bits comes back bit-identical, even
+/// with strong noise shaping on; once its level changes it is dithered.
+#[test]
+fn unedited_16_bit_audio_exports_bit_exact() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("src.wav");
+    let ch: Vec<f32> = (0..SR as usize * 2)
+        .map(|i| (i as f32 * 0.031).sin() * 0.3)
+        .collect();
+    let mut silent_then_tone = vec![0.0; SR as usize];
+    silent_then_tone.extend(&ch[..SR as usize]);
+    io::write_wav(
+        &src,
+        &AudioBuffer::new(SR, vec![ch, silent_then_tone]),
+        ExportSettings {
+            format: io::SampleFormat::Int16,
+            dither: Dither::None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let source = io::decode_file(&src).unwrap();
+
+    let mut s = Session::new(None);
+    ok(&mut s, json!({"op": "open", "path": src}));
+    let out = dir.path().join("out.wav");
+    let export = |s: &mut Session| {
+        ok(
+            s,
+            json!({"op": "export", "path": out, "kind": "mix", "preset": "cd",
+                   "dither": "strong", "force": true}),
+        );
+        io::decode_file(&out).unwrap()
+    };
+    let back = export(&mut s);
+    for c in 0..2 {
+        assert_eq!(back.channel(c), source.channel(c), "channel {c} changed");
+    }
+
+    // A level change takes the audio off the grid: now it gets dither,
+    // but the silent second of channel 2 stays silent.
+    ok(&mut s, json!({"op": "gain", "db": -0.5}));
+    let back = export(&mut s);
+    let lsb = 1.0 / 32768.0;
+    let g = 10f32.powf(-0.5 / 20.0);
+    let differs = back
+        .channel(0)
+        .iter()
+        .zip(source.channel(0))
+        .filter(|(b, s)| ((*b - *s * g) / lsb).abs() > 0.51)
+        .count();
+    assert!(differs > 1000, "dithered: {differs}");
+    assert!(back.channel(1)[..SR as usize - 512]
+        .iter()
+        .all(|&v| v == 0.0));
 }

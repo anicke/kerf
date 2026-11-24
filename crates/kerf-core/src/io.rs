@@ -55,8 +55,8 @@ impl SampleFormat {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExportSettings {
     pub format: SampleFormat,
-    /// TPDF dither when reducing to integer formats.
-    pub dither: bool,
+    /// Dither (and noise shaping) when reducing to integer formats.
+    pub dither: crate::dither::Dither,
     /// Convert to this sample rate on export (`None`: the project rate).
     #[serde(default)]
     pub sample_rate: Option<u32>,
@@ -70,10 +70,11 @@ pub struct ExportSettings {
 }
 
 impl ExportSettings {
-    /// Red Book audio CD: 16-bit, 44.1 kHz stereo, dithered.
+    /// Red Book audio CD: 16-bit, 44.1 kHz stereo, dithered with light
+    /// noise shaping.
     pub const AUDIO_CD: ExportSettings = ExportSettings {
         format: SampleFormat::Int16,
-        dither: true,
+        dither: crate::dither::Dither::Light,
         sample_rate: Some(44_100),
         channels: Some(2),
         container: crate::encode::Container::Wav,
@@ -82,7 +83,7 @@ impl ExportSettings {
     /// Lossless album: FLAC 24-bit at the project's rate and channels.
     pub const FLAC_ALBUM: ExportSettings = ExportSettings {
         format: SampleFormat::Int24,
-        dither: true,
+        dither: crate::dither::Dither::Tpdf,
         sample_rate: None,
         channels: None,
         container: crate::encode::Container::Flac,
@@ -102,7 +103,7 @@ impl ExportSettings {
     pub fn is_audio_cd(&self, project_rate: u32, project_channels: u16) -> bool {
         self.container == crate::encode::Container::Wav
             && self.format == SampleFormat::Int16
-            && self.dither
+            && self.dither.is_on()
             && self.rate_for(project_rate) == 44_100
             && self.channels_for(project_channels) == 2
     }
@@ -112,24 +113,11 @@ impl Default for ExportSettings {
     fn default() -> Self {
         Self {
             format: SampleFormat::Float32,
-            dither: true,
+            dither: crate::dither::Dither::Tpdf,
             sample_rate: None,
             channels: None,
             container: crate::encode::Container::Wav,
         }
-    }
-}
-
-/// Small, fast PRNG for dither (xorshift64*).
-struct Rng(u64);
-
-impl Rng {
-    fn next_f64(&mut self) -> f64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        let v = self.0.wrapping_mul(0x2545_F491_4F6C_DD1D);
-        (v >> 11) as f64 / (1u64 << 53) as f64
     }
 }
 
@@ -140,7 +128,9 @@ pub struct WavWriter {
     inner: Option<hound::WavWriter<BufWriter<File>>>,
     settings: ExportSettings,
     channels: usize,
-    rng: Rng,
+    quantizer: crate::dither::Quantizer,
+    /// Integer samples of one channel, reused between chunks.
+    ints: Vec<Vec<i32>>,
     tmp_path: PathBuf,
     path: PathBuf,
 }
@@ -171,7 +161,13 @@ impl WavWriter {
             inner: Some(inner),
             settings,
             channels: channels as usize,
-            rng: Rng(0x9E37_79B9_7F4A_7C15),
+            quantizer: crate::dither::Quantizer::new(
+                settings.format.bits(),
+                settings.dither,
+                sample_rate,
+                channels as usize,
+            ),
+            ints: vec![Vec::new(); channels as usize],
             tmp_path,
             path: path.to_path_buf(),
         })
@@ -188,18 +184,15 @@ impl WavWriter {
                     }
                 }
             }
-            fmt => {
-                let full_scale = (1i64 << (fmt.bits() - 1)) as f64;
-                let (min, max) = (-full_scale, full_scale - 1.0);
+            _ => {
+                for (c, ch) in chunk.iter().take(self.channels).enumerate() {
+                    self.ints[c].clear();
+                    self.quantizer
+                        .quantize(c, &ch.as_ref()[..frames], &mut self.ints[c]);
+                }
                 for i in 0..frames {
-                    for ch in chunk.iter().take(self.channels) {
-                        let mut v = ch.as_ref()[i] as f64 * full_scale;
-                        if self.settings.dither {
-                            // Triangular PDF, ±1 LSB peak.
-                            v += self.rng.next_f64() - self.rng.next_f64();
-                        }
-                        let q = v.round().clamp(min, max) as i32;
-                        w.write_sample(q).map_err(enc)?;
+                    for ch in &self.ints {
+                        w.write_sample(ch[i]).map_err(enc)?;
                     }
                 }
             }
@@ -278,7 +271,7 @@ mod tests {
             &buf,
             ExportSettings {
                 format: SampleFormat::Float32,
-                dither: false,
+                dither: crate::dither::Dither::None,
                 ..Default::default()
             },
         )
@@ -299,7 +292,7 @@ mod tests {
             &buf,
             ExportSettings {
                 format: SampleFormat::Int24,
-                dither: false,
+                dither: crate::dither::Dither::None,
                 ..Default::default()
             },
         )
@@ -322,7 +315,7 @@ mod tests {
             &buf,
             ExportSettings {
                 format: SampleFormat::Int16,
-                dither: true,
+                dither: crate::dither::Dither::Tpdf,
                 ..Default::default()
             },
         )

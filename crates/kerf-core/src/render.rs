@@ -1020,7 +1020,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = ExportSettings {
             format: crate::io::SampleFormat::Float32,
-            dither: false,
+            dither: crate::dither::Dither::None,
             ..Default::default()
         };
         let paths = export_regions(
@@ -1082,7 +1082,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cd.wav");
         let settings = ExportSettings {
-            dither: false,
+            dither: crate::dither::Dither::None,
             ..ExportSettings::AUDIO_CD
         };
         export_range(
@@ -1130,7 +1130,7 @@ mod tests {
             sector_len(48_000).unwrap(),
         );
         let settings = ExportSettings {
-            dither: false,
+            dither: crate::dither::Dither::None,
             ..ExportSettings::AUDIO_CD
         };
         let dir = tempfile::tempdir().unwrap();
@@ -1263,7 +1263,7 @@ mod tests {
         };
         let regions = regions_from_markers(&p, p.length());
         let settings = ExportSettings {
-            dither: false,
+            dither: crate::dither::Dither::None,
             ..ExportSettings::FLAC_ALBUM
         };
         let dir = tempfile::tempdir().unwrap();

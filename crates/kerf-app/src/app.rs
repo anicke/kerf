@@ -3600,10 +3600,28 @@ fn export_settings_ui(
             ui.end_row();
 
             ui.label("Dither");
-            ui.add_enabled(
-                !s.format.is_float(),
-                egui::Checkbox::new(&mut s.dither, "TPDF dither"),
-            );
+            ui.add_enabled_ui(!s.format.is_float(), |ui| {
+                use kerf_core::dither::Dither;
+                let shaping_ok = s.format.bits() <= 16;
+                egui::ComboBox::from_id_salt("dither")
+                    .selected_text(if s.format.is_float() { "Not needed" } else { s.dither.label() })
+                    .show_ui(ui, |ui| {
+                        for d in Dither::ALL {
+                            let tip = match d {
+                                Dither::None => "Plain rounding: quiet passages and fade-outs get distortion",
+                                Dither::Tpdf => "Turns rounding distortion into a steady, very low hiss",
+                                Dither::Light => "Moves the hiss away from the middle frequencies where hearing is most sensitive",
+                                Dither::Strong => "Psychoacoustic shaping: about 25 dB less hiss around 3–4 kHz, more above 15 kHz",
+                            };
+                            let enabled = shaping_ok || matches!(d, Dither::None | Dither::Tpdf);
+                            ui.add_enabled_ui(enabled, |ui| {
+                                ui.selectable_value(&mut s.dither, d, d.label())
+                                    .on_hover_text(tip)
+                                    .on_disabled_hover_text("Noise shaping is for 16-bit exports");
+                            });
+                        }
+                    });
+            });
             ui.end_row();
         });
     // Same-as-project choices are stored as "project" so presets stay recognisable.
@@ -3628,6 +3646,24 @@ fn export_settings_ui(
     }
 
     let out_rate = s.rate_for(pr);
+    if !s.format.is_float() {
+        let effective = s.dither.effective(s.format.bits(), out_rate);
+        let note = if effective != s.dither {
+            Some(match effective {
+                kerf_core::dither::Dither::Tpdf => {
+                    "Noise shaping is only for 16-bit; plain TPDF is used."
+                }
+                _ => "Strong shaping is designed for 44.1 or 48 kHz; light shaping is used.",
+            })
+        } else if s.dither.is_on() {
+            Some("Silence and audio already exact at this bit depth are left undithered.")
+        } else {
+            None
+        };
+        if let Some(n) = note {
+            ui.label(egui::RichText::new(n).weak().small());
+        }
+    }
     if s.container == Container::Flac {
         ui.label(
             egui::RichText::new(

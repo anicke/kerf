@@ -183,7 +183,9 @@ From reviewing export against established editors.
 - Leave stretches out of a split (pre-show, chatter between songs): a tick-box per track in the
   export dialog first; start/end regions later.
 - Lossy formats (MP3/Opus/AAC), pending open decision 3. AIFF.
-- Noise-shaped dither for 16-bit masters.
+- ~~Dither options~~ (done: none / TPDF / TPDF with light or strong (F-weighted) noise shaping for
+  16-bit, light by default for Audio CD; silence and audio already exact at the target depth are
+  left undithered, so unedited 16-bit audio exports bit-identical; `--dither` in the CLI).
 - Smaller: stems that follow the selection; CUE pregaps (`INDEX 00`).
 
 ## Phase 7: Platform, packaging and open-source readiness

@@ -208,7 +208,8 @@ pub struct ExportOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channels: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dither: Option<bool>,
+    /// none, tpdf, light or strong (noise shaping, 16-bit); true/false also work.
+    pub dither: Option<crate::dither::Dither>,
     /// Snap track boundaries to CD sectors (tracks and cue exports).
     /// Defaults to on for the `cd` preset.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -23,6 +23,7 @@ pub use types::*;
 use crate::album;
 use crate::cache::AudioCache;
 use crate::detect::{self, DetectSettings, Placement};
+use crate::dither::Dither;
 use crate::document::Document;
 use crate::edit::{self, Clipboard, NormalizeMode, NormalizeSettings, PasteMode};
 use crate::encode::Container;
@@ -1318,7 +1319,7 @@ impl Session {
 pub fn export_settings(o: &ExportOptions) -> OpResult<ExportSettings> {
     let mut s = match o.preset {
         Preset::Wav => ExportSettings {
-            dither: false,
+            dither: Dither::None,
             ..Default::default()
         },
         Preset::Cd => ExportSettings::AUDIO_CD,
@@ -1338,10 +1339,14 @@ pub fn export_settings(o: &ExportOptions) -> OpResult<ExportSettings> {
             Bits::Float32 => SampleFormat::Float32,
         };
         // Dither by default whenever quantising, unless asked otherwise.
-        s.dither = !s.format.is_float();
+        s.dither = match s.dither {
+            _ if s.format.is_float() => Dither::None,
+            Dither::None => Dither::Tpdf,
+            d => d,
+        };
     } else if s.container == Container::Flac && s.format.is_float() {
         s.format = SampleFormat::Int24;
-        s.dither = true;
+        s.dither = Dither::Tpdf;
     }
     if let Some(d) = o.dither {
         s.dither = d;
@@ -1375,10 +1380,12 @@ fn describe(s: &ExportSettings, rate: u32, channels: u16) -> String {
         s.format.label(),
         s.rate_for(rate),
         s.channels_for(channels),
-        if s.dither && !s.format.is_float() {
-            ", dithered"
-        } else {
-            ""
+        match s.dither.effective(s.format.bits(), s.rate_for(rate)) {
+            _ if s.format.is_float() => "",
+            Dither::None => "",
+            Dither::Tpdf => ", dithered",
+            Dither::Light => ", dithered with light noise shaping",
+            Dither::Strong => ", dithered with strong noise shaping",
         }
     )
 }

@@ -68,38 +68,7 @@ pub struct Tags {
     pub cover: Option<PathBuf>,
 }
 
-/// Float → integer conversion with optional TPDF dither (±1 LSB).
-pub struct Quantizer {
-    full_scale: f64,
-    dither: bool,
-    rng: u64,
-}
-
-impl Quantizer {
-    pub fn new(bits: u16, dither: bool) -> Self {
-        Self {
-            full_scale: (1i64 << (bits - 1)) as f64,
-            dither,
-            rng: 0x9E37_79B9_7F4A_7C15,
-        }
-    }
-
-    fn uniform(&mut self) -> f64 {
-        self.rng ^= self.rng >> 12;
-        self.rng ^= self.rng << 25;
-        self.rng ^= self.rng >> 27;
-        (self.rng.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 11) as f64 / (1u64 << 53) as f64
-    }
-
-    #[inline]
-    pub fn quantize(&mut self, v: f32) -> i32 {
-        let mut x = v as f64 * self.full_scale;
-        if self.dither {
-            x += self.uniform() - self.uniform();
-        }
-        x.round().clamp(-self.full_scale, self.full_scale - 1.0) as i32
-    }
-}
+use crate::dither::Quantizer;
 
 const FLAC_BLOCK: usize = 4096;
 
@@ -114,6 +83,8 @@ pub struct FlacWriter {
     pending: Vec<i32>,
     channels: usize,
     quantizer: Quantizer,
+    /// Integer samples per channel, reused between chunks.
+    ints: Vec<Vec<i32>>,
     tmp_path: PathBuf,
     path: PathBuf,
 }
@@ -156,16 +127,22 @@ impl FlacWriter {
             context: Context::new(bits, channels),
             pending: Vec::with_capacity(FLAC_BLOCK * channels * 2),
             channels,
-            quantizer: Quantizer::new(bits as u16, settings.dither),
+            quantizer: Quantizer::new(bits as u16, settings.dither, sample_rate, channels),
+            ints: vec![Vec::new(); channels],
             tmp_path,
             path: path.to_path_buf(),
         })
     }
 
     pub fn write_planar<C: AsRef<[f32]>>(&mut self, chunk: &[C], frames: usize) -> Result<()> {
+        for (c, ch) in chunk.iter().take(self.channels).enumerate() {
+            self.ints[c].clear();
+            self.quantizer
+                .quantize(c, &ch.as_ref()[..frames], &mut self.ints[c]);
+        }
         for i in 0..frames {
-            for ch in chunk.iter().take(self.channels) {
-                self.pending.push(self.quantizer.quantize(ch.as_ref()[i]));
+            for ch in &self.ints {
+                self.pending.push(ch[i]);
             }
         }
         let block = FLAC_BLOCK * self.channels;
@@ -288,7 +265,7 @@ pub fn write_flac_tags(path: &Path, t: &Tags) -> Result<()> {
 
 /// A file being exported: WAV or FLAC, chosen by [`ExportSettings::container`].
 pub enum AudioWriter {
-    Wav(WavWriter),
+    Wav(Box<WavWriter>),
     Flac(Box<FlacWriter>),
 }
 
@@ -300,7 +277,12 @@ impl AudioWriter {
         settings: ExportSettings,
     ) -> Result<Self> {
         Ok(match settings.container {
-            Container::Wav => Self::Wav(WavWriter::create(path, sample_rate, channels, settings)?),
+            Container::Wav => Self::Wav(Box::new(WavWriter::create(
+                path,
+                sample_rate,
+                channels,
+                settings,
+            )?)),
             Container::Flac => Self::Flac(Box::new(FlacWriter::create(
                 path,
                 sample_rate,
@@ -356,7 +338,7 @@ mod tests {
             let buf = signal(FLAC_BLOCK * 3 + 1234); // includes a partial last block
             let settings = ExportSettings {
                 format,
-                dither: false,
+                dither: crate::dither::Dither::None,
                 container: Container::Flac,
                 ..Default::default()
             };
@@ -377,11 +359,18 @@ mod tests {
                 (back.sample_rate(), back.num_channels(), back.frames()),
                 (44_100, 2, buf.frames())
             );
-            let mut q = Quantizer::new(bits, false);
+            let mut q = Quantizer::new(bits, crate::dither::Dither::None, 44_100, 2);
             let scale = (1i64 << (bits - 1)) as f32;
-            for i in 0..buf.frames() {
-                for c in 0..2 {
-                    let want = q.quantize(buf.channel(c)[i]) as f32 / scale;
+            let ints: Vec<Vec<i32>> = (0..2)
+                .map(|c| {
+                    let mut v = Vec::new();
+                    q.quantize(c, buf.channel(c), &mut v);
+                    v
+                })
+                .collect();
+            for (c, ch) in ints.iter().enumerate() {
+                for (i, &v) in ch.iter().enumerate() {
+                    let want = v as f32 / scale;
                     assert_eq!(back.channel(c)[i], want, "{bits}-bit frame {i} ch {c}");
                 }
             }

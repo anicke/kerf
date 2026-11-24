@@ -166,7 +166,7 @@ fn save_impl(project: &Project, path: &Path, recovery: bool) -> Result<()> {
                     &src.audio,
                     ExportSettings {
                         format: SampleFormat::Float32,
-                        dither: false,
+                        dither: crate::dither::Dither::None,
                         ..Default::default()
                     },
                 )?;

@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use kerf_core::dither::Dither;
 use kerf_core::ops::{
     Bits, ExportKind, ExportOptions, FileType, OpError, Preset, Request, Response, Session, Time,
 };
@@ -209,8 +210,13 @@ struct FormatArgs {
     /// Convert to this many channels.
     #[arg(long)]
     channels: Option<u16>,
-    /// Turn off dither when reducing bit depth.
-    #[arg(long)]
+    /// Dither when reducing bit depth: none, tpdf, or tpdf with light or
+    /// strong noise shaping (16-bit; strong at 44.1/48 kHz). Default: tpdf,
+    /// light for --preset cd.
+    #[arg(long, value_enum, value_name = "MODE")]
+    dither: Option<DitherArg>,
+    /// Same as --dither none.
+    #[arg(long, conflicts_with = "dither")]
     no_dither: bool,
     /// Don't snap track boundaries to CD sectors (on by default with --preset cd).
     #[arg(long)]
@@ -239,6 +245,14 @@ enum BitsArg {
     #[value(name = "32")]
     I32,
     Float,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum DitherArg {
+    None,
+    Tpdf,
+    Light,
+    Strong,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -276,7 +290,16 @@ impl FormatArgs {
             }),
             sample_rate: self.rate,
             channels: self.channels,
-            dither: self.no_dither.then_some(false),
+            dither: if self.no_dither {
+                Some(Dither::None)
+            } else {
+                self.dither.map(|d| match d {
+                    DitherArg::None => Dither::None,
+                    DitherArg::Tpdf => Dither::Tpdf,
+                    DitherArg::Light => Dither::Light,
+                    DitherArg::Strong => Dither::Strong,
+                })
+            },
             cd_safe: self.no_cd_safe.then_some(false),
             names: self.names.clone(),
             ..Default::default()
