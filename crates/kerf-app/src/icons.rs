@@ -43,6 +43,7 @@ pub enum Icon {
     DbScale,
     ZeroCrossings,
     MarkersPanel,
+    HistoryPanel,
 }
 
 /// A fixed-size button showing `icon`, `height` tall (to match its
@@ -405,6 +406,31 @@ fn paint(p: &egui::Painter, c: Pos2, icon: Icon, color: Color32, bg: Color32) {
                 ]));
                 p.add(line(vec![pos2(c.x - 1.5, y), pos2(c.x + 6.5, y)], 1.5));
             }
+        }
+        Icon::HistoryPanel => {
+            // A clock face with an arrow turning back.
+            let r = 6.0;
+            let pts: Vec<Pos2> = (0..=20)
+                .map(|i| {
+                    let a = (-0.75 + 1.5 * i as f32 / 20.0) * std::f32::consts::PI;
+                    pos2(c.x + r * a.sin(), c.y - r * a.cos())
+                })
+                .collect();
+            let tail = pts[0];
+            p.add(line(pts, 1.5));
+            p.add(fill(vec![
+                pos2(tail.x - 3.2, tail.y - 1.0),
+                pos2(tail.x + 0.8, tail.y - 3.2),
+                pos2(tail.x + 1.2, tail.y + 1.4),
+            ]));
+            p.add(line(
+                vec![
+                    pos2(c.x, c.y - 3.5),
+                    pos2(c.x, c.y),
+                    pos2(c.x + 2.5, c.y + 1.5),
+                ],
+                1.4,
+            ));
         }
     }
 }

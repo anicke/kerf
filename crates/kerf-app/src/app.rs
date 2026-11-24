@@ -360,6 +360,7 @@ pub enum Action {
     ExtendToStart,
     ExtendToEnd,
     ToggleMarkersPanel,
+    ToggleHistoryPanel,
     Preferences,
     Album,
     ZeroCrossings,
@@ -948,6 +949,10 @@ impl KerfApp {
             }
             ToggleMarkersPanel => {
                 self.prefs.show_markers_panel = !self.prefs.show_markers_panel;
+                let _ = self.prefs.save();
+            }
+            ToggleHistoryPanel => {
+                self.prefs.show_history_panel = !self.prefs.show_history_panel;
                 let _ = self.prefs.save();
             }
             ZeroCrossings => {
@@ -1713,6 +1718,7 @@ impl KerfApp {
             (cmd_shift, Key::ArrowLeft, Action::ExtendPrevEditPoint),
             (cmd_shift, Key::ArrowRight, Action::ExtendNextEditPoint),
             (cmd_shift, Key::M, Action::ToggleMarkersPanel),
+            (cmd_shift, Key::H, Action::ToggleHistoryPanel),
             (cmd_shift, Key::A, Action::Album),
             (cmd_shift, Key::O, Action::OpenRecent),
             (cmd, Key::ArrowLeft, Action::PrevEditPoint),
@@ -2235,6 +2241,15 @@ impl KerfApp {
                 {
                     let _ = self.prefs.save();
                 }
+                if ui
+                    .checkbox(
+                        &mut self.prefs.show_history_panel,
+                        "History panel (Ctrl+Shift+H)",
+                    )
+                    .changed()
+                {
+                    let _ = self.prefs.save();
+                }
             });
             ui.menu_button("Help", |ui| {
                 item(ui, "About Kerf", "", Action::About, &mut act)
@@ -2592,6 +2607,14 @@ impl KerfApp {
             true,
             "Markers panel (Ctrl+Shift+M)",
             Action::ToggleMarkersPanel,
+        );
+        add(
+            ui,
+            Icon::HistoryPanel,
+            self.prefs.show_history_panel,
+            true,
+            "History panel (Ctrl+Shift+H)",
+            Action::ToggleHistoryPanel,
         );
         if let Some(a) = act {
             self.perform(ctx, a);
@@ -3250,11 +3273,25 @@ impl eframe::App for KerfApp {
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        if self.prefs.show_markers_panel {
-            egui::Panel::right("markers")
+        let (markers, history) = (self.prefs.show_markers_panel, self.prefs.show_history_panel);
+        if markers || history {
+            egui::Panel::right("side")
                 .resizable(true)
                 .default_size(340.0)
-                .show(ui, |ui| crate::markers_panel::show(self, ui));
+                .show(ui, |ui| {
+                    if markers && history {
+                        // History below the markers, sharing the side panel.
+                        egui::Panel::bottom("history")
+                            .resizable(true)
+                            .default_size(ui.available_height() * 0.4)
+                            .show(ui, |ui| crate::history_panel::show(self, ui));
+                        crate::markers_panel::show(self, ui);
+                    } else if markers {
+                        crate::markers_panel::show(self, ui);
+                    } else {
+                        crate::history_panel::show(self, ui);
+                    }
+                });
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(ui.style()).inner_margin(0.0))
@@ -4069,7 +4106,8 @@ Ctrl+Z       undo                 Ctrl+⇧Z      redo
 Ctrl+M       normalize            Ctrl+G       gain
 I / O        fade in / out        Ctrl+R       render in place
 M            add marker           , / .        previous / next marker
-Ctrl+⇧M      markers panel        Ctrl+,       preferences
+Ctrl+⇧M      markers panel        Ctrl+⇧H      history panel
+Ctrl+,       preferences
 Ctrl+↑ / ↓   vertical zoom        D            waveform in dB
 Shift+Z      selection to zero crossings
 Ctrl+E       export mix           Ctrl+⇧E      export split at markers

@@ -18,6 +18,15 @@ struct Snapshot {
     merge_key: Option<String>,
 }
 
+/// One state in [`Document::history_states`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HistoryState<'a> {
+    /// The edit that led to this state; `None` for the oldest state kept.
+    pub label: Option<&'a str>,
+    /// This is the state last saved.
+    pub saved: bool,
+}
+
 pub struct Document {
     project: Project,
     revision: u64,
@@ -182,6 +191,57 @@ impl Document {
         self.undo.iter().map(|s| s.label.as_str())
     }
 
+    /// Every state in the history, oldest first: the starting state (no
+    /// label), then one per edit, including undone edits that can be redone.
+    /// Use with [`history_position`](Self::history_position) and
+    /// [`go_to`](Self::go_to).
+    pub fn history_states(&self) -> Vec<HistoryState<'_>> {
+        let start = std::iter::once((
+            None,
+            self.undo.first().map_or(self.revision, |s| s.revision),
+        ));
+        // Undo entry i holds the state before edit i, so the state after it
+        // is entry i + 1's (or the current one for the last edit).
+        let done = self.undo.iter().enumerate().map(|(i, s)| {
+            let rev = self.undo.get(i + 1).map_or(self.revision, |n| n.revision);
+            (Some(s.label.as_str()), rev)
+        });
+        // Redo entries hold the state after their edit; the next one is last.
+        let undone = self
+            .redo
+            .iter()
+            .rev()
+            .map(|s| (Some(s.label.as_str()), s.revision));
+        start
+            .chain(done)
+            .chain(undone)
+            .map(|(label, rev)| HistoryState {
+                label,
+                saved: rev == self.saved_revision,
+            })
+            .collect()
+    }
+
+    /// Index of the current state in [`history_states`](Self::history_states).
+    pub fn history_position(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Undo or redo until the state at `index` in
+    /// [`history_states`](Self::history_states) is current (clamped to the
+    /// newest). Returns whether anything changed.
+    pub fn go_to(&mut self, index: usize) -> bool {
+        let index = index.min(self.undo.len() + self.redo.len());
+        let mut changed = false;
+        while self.undo.len() > index && self.undo().is_some() {
+            changed = true;
+        }
+        while self.undo.len() < index && self.redo().is_some() {
+            changed = true;
+        }
+        changed
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
     }
@@ -288,6 +348,46 @@ mod tests {
         assert_eq!(d.project().track(t).unwrap().gain, 0.7);
         d.undo();
         assert_eq!(d.project().track(t).unwrap().gain, 1.0);
+    }
+
+    #[test]
+    fn history_states_and_go_to() {
+        let (mut d, t) = doc();
+        let p0 = d.project().clone();
+        d.apply("A", |p| edit::split_at(p, &[t], 100)).unwrap();
+        let pa = d.project().clone();
+        d.apply("B", |p| edit::split_at(p, &[t], 200)).unwrap();
+        d.mark_saved();
+        d.apply("C", |p| edit::split_at(p, &[t], 300)).unwrap();
+        let pc = d.project().clone();
+        d.undo();
+        let labels = |d: &Document| {
+            d.history_states()
+                .iter()
+                .map(|s| s.label.unwrap_or("-").to_string())
+                .collect::<Vec<_>>()
+        };
+        let saved = |d: &Document| d.history_states().iter().position(|s| s.saved);
+        assert_eq!(labels(&d), ["-", "A", "B", "C"]);
+        assert_eq!(d.history_position(), 2);
+        assert_eq!(saved(&d), Some(2));
+
+        assert!(d.go_to(1));
+        assert_eq!(d.project(), &pa);
+        assert_eq!(labels(&d), ["-", "A", "B", "C"], "jumping keeps every step");
+        assert_eq!(saved(&d), Some(2));
+        assert!(d.is_dirty());
+
+        assert!(d.go_to(99), "clamped to the newest");
+        assert_eq!(d.history_position(), 3);
+        assert_eq!(d.project(), &pc);
+        assert!(!d.go_to(3));
+
+        d.go_to(2);
+        assert!(!d.is_dirty(), "back at the saved state");
+        d.go_to(0);
+        assert_eq!(d.project(), &p0);
+        assert_eq!(saved(&d), Some(2));
     }
 
     #[test]

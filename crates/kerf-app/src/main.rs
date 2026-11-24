@@ -5,6 +5,7 @@ mod app;
 mod assistant;
 mod audio;
 mod detect_ui;
+mod history_panel;
 mod icons;
 mod jobs;
 mod markers_panel;

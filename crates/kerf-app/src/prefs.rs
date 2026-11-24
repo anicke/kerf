@@ -34,6 +34,7 @@ pub struct Prefs {
     /// Crash-recovery snapshot interval in seconds (0 turns it off).
     pub autosave_secs: u64,
     pub show_markers_panel: bool,
+    pub show_history_panel: bool,
     pub time_format: kerf_core::util::TimeFormat,
     /// Put selection edges and split points on zero crossings (avoids clicks).
     pub snap_zero_crossings: bool,
@@ -58,6 +59,7 @@ impl Default for Prefs {
             preview_after: 2.0,
             autosave_secs: 60,
             show_markers_panel: false,
+            show_history_panel: false,
             time_format: kerf_core::util::TimeFormat::MinSec,
             snap_zero_crossings: false,
             ffmpeg: Default::default(),
