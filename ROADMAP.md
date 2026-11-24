@@ -195,6 +195,20 @@ From reviewing export against established editors.
   written only by `main`, job timeouts, Dependabot with a 7-day cooldown; the repository allows
   only GitHub's actions and `Swatinem/rust-cache`, SHA-pinned).
 - **Packages:** Linux (AppImage and/or Flatpak), macOS (signed .dmg), Windows (installer).
+- **Release workflow** like little-helper's: a pushed `v*` tag builds every platform in CI from the
+  tagged source (no cache), checks the tag against `Cargo.toml`, waits for approval in a `release`
+  environment, and publishes with `SHA256SUMS` and build-provenance attestations.
+- **Code signing** (see open decision 6):
+  - *Windows:* a signature names the publisher, but no longer clears SmartScreen at once: OV and
+    EV certificates alike build reputation per file as people download it. Keys must live in
+    hardware or a cloud HSM, and certificates last at most 460 days (since March 2026). Plan:
+    ship the first release unsigned (with a README note on the SmartScreen warning), then apply
+    to the **SignPath Foundation** (free for open source, signs from GitHub Actions; the publisher
+    shown is "SignPath Foundation"). For Kerf's own name instead: Certum's Open Source Code
+    Signing (about €69/year, cloud key, shows "Open Source Developer, <name>"). Azure Artifact
+    Signing ($9.99/month) takes individuals only in the USA and Canada for now.
+  - *macOS:* notarisation needs an Apple Developer account ($99/year); without it Gatekeeper
+    blocks the app unless the user overrides it. No free route.
 - ~~**Licence**~~ (done: MIT OR Apache-2.0, with `LICENSE-MIT` and `LICENSE-APACHE`).
 - ~~**Dependency licence checks**~~ (done: `cargo-deny` in CI, `deny.toml`; revisit the allowed
   licences once Kerf's own licence is chosen).
@@ -232,6 +246,8 @@ From reviewing export against established editors.
 4. Whether the in-app MCP server should also accept connections from other machines (default:
    local only).
 5. Transcription model and its size/licence, if pursued.
+6. Code signing: SignPath Foundation (free, publisher "SignPath Foundation") or Certum Open Source
+   (about €69/year, your name) for Windows; whether to pay for Apple notarisation on macOS.
 
 ## Suggested order
 
