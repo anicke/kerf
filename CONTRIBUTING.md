@@ -51,6 +51,17 @@ contributors outside the project start once a maintainer approves them.
 - New dependencies must pass `cargo deny check`: permissive licences (see `deny.toml`) and
   crates.io only.
 
+## Releasing (maintainers)
+
+1. Set `version` in the workspace `Cargo.toml`, run `cargo check` so `Cargo.lock` follows, and
+   merge that to `main`.
+2. Optionally run the *Release* workflow by hand on `main` (Actions → Release → Run workflow): it
+   builds every platform and keeps the archives as workflow artifacts without publishing.
+3. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The workflow refuses a tag that
+   doesn't match `Cargo.toml`.
+4. Once the builds pass, approve the `release` environment. The release is then published with
+   generated notes, `SHA256SUMS` and attestations. Edit the notes on GitHub afterwards if needed.
+
 ## License
 
 Unless you say otherwise, anything you contribute is licensed as Kerf is: under both the MIT and

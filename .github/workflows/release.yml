@@ -1,0 +1,149 @@
+name: Release
+
+# A pushed `v*` tag builds every platform from a clean checkout, then waits in the `release`
+# environment for a reviewer before anything is published. The published release carries
+# SHA256SUMS and a build-provenance attestation for every archive:
+#   gh attestation verify <archive> --repo anicke/kerf
+# Running the workflow by hand (workflow_dispatch) builds and uploads the archives as workflow
+# artifacts only: a dry run that never publishes.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # Fail before any build if the tag and the workspace version disagree.
+  version:
+    name: tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The version comes from rust-toolchain.toml.
+      - run: rustup toolchain install --profile minimal
+      - name: Check
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "kerf") | .version')
+          echo "workspace version $version"
+          if [ "$REF_TYPE" != "tag" ]; then
+            echo "not a tag: dry run, nothing will be published"
+          elif [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match workspace version $version" >&2
+            exit 1
+          fi
+
+  build:
+    needs: version
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # The oldest supported Ubuntu runner, so the binaries need only an older glibc and
+          # run on more distributions.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    # No rust-cache here on purpose: a tag build can restore caches saved by main, and a
+    # release should come from nothing but the tagged source and Cargo.lock.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add "$TARGET"
+      - name: Install Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libfontconfig1-dev libxkbcommon-dev libwayland-dev
+      - name: Build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET" -p kerf -p kerf-cli -p kerf-mcp
+      - name: Package
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          SHA: ${{ github.sha }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then label="$REF_NAME"; else label="dev-${SHA::7}"; fi
+          name="kerf-$label-$TARGET"
+          mkdir -p "dist/$name"
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          for bin in kerf kerf-cli kerf-mcp; do
+            cp "target/$TARGET/release/$bin$ext" "dist/$name/"
+          done
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$name/"
+          cd dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+          rm -r "$name"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # Only a tag publishes; a manual run stops after the builds.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Required reviewers on this environment are the gate: nothing below runs until approved.
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      # Draft first, then publish: with immutable releases on, a release's assets are fixed
+      # at the moment it is published, so everything must be uploaded before then.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* --draft --verify-tag --title "Kerf $TAG" --generate-notes
+          gh release edit "$TAG" --draft=false

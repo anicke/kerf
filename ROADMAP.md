@@ -195,9 +195,11 @@ From reviewing export against established editors.
   written only by `main`, job timeouts, Dependabot with a 7-day cooldown; the repository allows
   only GitHub's actions and `Swatinem/rust-cache`, SHA-pinned).
 - **Packages:** Linux (AppImage and/or Flatpak), macOS (signed .dmg), Windows (installer).
-- **Release workflow** like little-helper's: a pushed `v*` tag builds every platform in CI from the
-  tagged source (no cache), checks the tag against `Cargo.toml`, waits for approval in a `release`
-  environment, and publishes with `SHA256SUMS` and build-provenance attestations.
+- ~~**Release workflow**~~ (done: a pushed `v*` tag checks the tag against `Cargo.toml`, builds
+  Linux x86_64 (on Ubuntu 22.04 for an older glibc), macOS arm64 and x86_64 and Windows x86_64
+  from the tagged source with no cache, waits for approval in the `release` environment, and
+  publishes archives of `kerf`, `kerf-cli` and `kerf-mcp` with `SHA256SUMS` and build-provenance
+  attestations. Running it by hand is a dry run that builds without publishing).
 - **Code signing** (see open decision 6):
   - *Windows:* a signature names the publisher, but no longer clears SmartScreen at once: OV and
     EV certificates alike build reputation per file as people download it. Keys must live in

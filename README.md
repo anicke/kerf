@@ -7,7 +7,9 @@ scripts and AI assistants can do the same work.
 
 ![Kerf with a concert split into songs, the Statistics and Markers panels open](docs/screenshot.png)
 
-**Status:** early development. There are no releases yet, so build from source (below). CI builds
+**Status:** early development. Prebuilt downloads are on the
+[Releases](https://github.com/anicke/kerf/releases) page once a version is tagged (see
+[Installing](#installing)); otherwise build from source (below). CI builds
 and tests every change on Linux, Windows and macOS, but day-to-day use so far has been on Linux,
 and playback hasn't been tried on many audio devices. Song detection is tuned on synthetic
 recordings; reports from real concerts are very welcome. See [ROADMAP.md](ROADMAP.md) for what's
@@ -108,6 +110,28 @@ done, what's next, and known limitations.
   (`KERF_CONFIG_DIR` overrides it).
 - **Projects** (`.kerf`) are JSON plus references to your audio files. Rendered material is
   saved beside the project as 32-bit float WAV.
+
+## Installing
+
+Each [release](https://github.com/anicke/kerf/releases) has an archive per platform with the
+app (`kerf`), the command-line tool (`kerf-cli`) and the MCP server (`kerf-mcp`): Linux
+(x86_64), macOS (Apple silicon and Intel) and Windows (x86_64). Unpack it anywhere and run
+`kerf`. There are no installers yet.
+
+- **Linux:** needs ALSA, fontconfig and libxkbcommon, which desktop distributions already have.
+  Built on Ubuntu 22.04, so it runs on distributions with glibc 2.35 or newer.
+- **macOS:** the binaries are not notarised yet, so Gatekeeper blocks them at first. Clear the
+  download flag with `xattr -dr com.apple.quarantine <unpacked folder>`, or allow them in
+  *System Settings → Privacy & Security*.
+- **Windows:** the binaries are not signed yet, so SmartScreen warns on first start; choose
+  *More info → Run anyway*.
+
+To check a download, compare it against `SHA256SUMS` from the same release, or verify where it
+was built with the [GitHub CLI](https://cli.github.com):
+
+```sh
+gh attestation verify kerf-v0.1.0-x86_64-unknown-linux-gnu.tar.gz --repo anicke/kerf
+```
 
 ## Building
 
