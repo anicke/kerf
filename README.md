@@ -21,7 +21,10 @@ MCP server so AI assistants can edit alongside you.
   Works on a selection or whole tracks.
 - **Rendering and track splits.** Export the mix or a selection; split an album recording into one
   file per region between markers; export each track as a stem; or render a track in place to
-  consolidate edits. WAV output in 16/24/32-bit PCM (with TPDF dither) or 32-bit float.
+  consolidate edits. WAV output in 16/24/32-bit PCM or 32-bit float; split files named from a
+  template such as `{nn} - {title}` or `{artist} - {album}/{nn} {title}`. Dither is TPDF, optionally
+  noise-shaped (light, or psychoacoustic "strong") for 16-bit; silence and audio that is already
+  exact at the target depth are left untouched, so unedited 16-bit audio exports bit-identical.
 - **Song markers for live recordings.** *Markers → Detect Song Starts…* finds where each song
   begins in a concert recording. Live recordings have no silence between songs (applause, crowd,
   talking), so Kerf looks for where the *music* stops and starts, using loudness relative to the
@@ -37,7 +40,7 @@ MCP server so AI assistants can edit alongside you.
   sheet. The export dialog shows how many boundaries would otherwise be affected. Works at any rate
   that is a multiple of 75 Hz (44.1, 48, 88.2, 96 kHz): those sectors convert exactly to CD sectors.
   *Markers → Snap Markers to CD Sectors* moves the markers themselves.
-- **Export presets and conversion.** *Audio CD* sets 16-bit, 44.1 kHz stereo, TPDF dither and
+- **Export presets and conversion.** *Audio CD* sets 16-bit, 44.1 kHz stereo, noise-shaped dither and
   CD-safe boundaries in one click, from a project at any rate; *Archive* keeps 32-bit float at the
   project rate. Any export can convert sample rate (high-quality resampling) and channels (mono ↔
   stereo). Split exports render and convert the whole album in one pass and cut it at the
