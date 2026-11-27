@@ -113,18 +113,28 @@ done, what's next, and known limitations.
 
 ## Installing
 
-Each [release](https://github.com/anicke/kerf/releases) has an archive per platform with the
-app (`kerf`), the command-line tool (`kerf-cli`) and the MCP server (`kerf-mcp`): Linux
-(x86_64), macOS (Apple silicon and Intel) and Windows (x86_64). Unpack it anywhere and run
-`kerf`. There are no installers yet.
+Each [release](https://github.com/anicke/kerf/releases) has a package per platform, plus a plain
+archive with the app (`kerf`), the command-line tool (`kerf-cli`) and the MCP server
+(`kerf-mcp`) to unpack anywhere. The packages contain all three as well.
 
-- **Linux:** needs ALSA, fontconfig and libxkbcommon, which desktop distributions already have.
-  Built on Ubuntu 22.04, so it runs on distributions with glibc 2.35 or newer.
-- **macOS:** the binaries are not notarised yet, so Gatekeeper blocks them at first. Clear the
-  download flag with `xattr -dr com.apple.quarantine <unpacked folder>`, or allow them in
-  *System Settings → Privacy & Security*.
-- **Windows:** the binaries are not signed yet, so SmartScreen warns on first start; choose
-  *More info → Run anyway*.
+- **Linux (x86_64):** `kerf-<version>-linux-x86_64.AppImage`. Make it executable
+  (`chmod +x`) and run it. `./kerf-….AppImage kerf-cli …` and `./kerf-….AppImage kerf-mcp …`
+  run the bundled tools. Tools such as AppImageLauncher or Gear Lever add it to the
+  applications menu and register `.kerf` projects. It needs ALSA, fontconfig, libxkbcommon and
+  FUSE 2 (`libfuse2`), which most desktop distributions already have (without FUSE, add
+  `--appimage-extract-and-run`). Built on Ubuntu 22.04, so it runs on distributions with
+  glibc 2.35 or newer; the same goes for the archive.
+- **macOS (Apple silicon or Intel):** open `kerf-<version>-macos-arm64.dmg` (or `-x86_64`) and
+  drag Kerf to Applications. The app is not notarised yet, so Gatekeeper blocks it at first:
+  open *System Settings → Privacy & Security* and choose *Open Anyway*, or run
+  `xattr -dr com.apple.quarantine /Applications/Kerf.app`. `kerf-cli` and `kerf-mcp` are in
+  `Kerf.app/Contents/MacOS`. Double-clicking a `.kerf` project doesn't open it in Kerf yet; use
+  *File → Open* or drop it on the window.
+- **Windows (x86_64):** run `kerf-<version>-windows-x86_64-setup.exe`. It installs for your
+  user only, with no administrator prompt (or for everyone if you choose), adds Kerf to the
+  Start menu, opens `.kerf` projects and offers Kerf under *Open with* for audio files.
+  `kerf-cli.exe` and `kerf-mcp.exe` are in the install folder. The installer is not signed
+  yet, so SmartScreen warns; choose *More info → Run anyway*.
 
 To check a download, compare it against `SHA256SUMS` from the same release, or verify where it
 was built with the [GitHub CLI](https://cli.github.com):

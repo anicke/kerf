@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The .kerf project file type, for shared-mime-info. -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-kerf-project">
+    <comment>Kerf project</comment>
+    <sub-class-of type="application/json"/>
+    <generic-icon name="io.github.anicke.Kerf"/>
+    <glob pattern="*.kerf"/>
+  </mime-type>
+</mime-info>

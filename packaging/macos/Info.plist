@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- build-dmg.sh replaces @VERSION@. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Kerf</string>
+  <key>CFBundleDisplayName</key>
+  <string>Kerf</string>
+  <key>CFBundleIdentifier</key>
+  <string>io.github.anicke.Kerf</string>
+  <key>CFBundleExecutable</key>
+  <string>kerf</string>
+  <key>CFBundleIconFile</key>
+  <string>kerf</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleVersion</key>
+  <string>@VERSION@</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.music</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>10.13</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>MIT OR Apache-2.0</string>
+</dict>
+</plist>

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <!-- Kerf app icon: a waveform with a cut through it. Source for every packaged icon size;
+       regenerate them with packaging/icons/render.sh after editing. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a4566"/>
+      <stop offset="1" stop-color="#16263a"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bg)"/>
+  <g fill="#6ebeff">
+    <rect x="99" y="204" width="26" height="104" rx="13"/>
+    <rect x="137" y="144" width="26" height="224" rx="13"/>
+    <rect x="175" y="106" width="26" height="300" rx="13"/>
+    <rect x="213" y="170" width="26" height="172" rx="13"/>
+    <rect x="273" y="128" width="26" height="256" rx="13"/>
+    <rect x="311" y="92" width="26" height="328" rx="13"/>
+    <rect x="349" y="152" width="26" height="208" rx="13"/>
+    <rect x="387" y="198" width="26" height="116" rx="13"/>
+  </g>
+  <g fill="#ffa032">
+    <rect x="249" y="92" width="14" height="328" rx="7"/>
+    <path d="M232 76 H280 L256 112 Z" stroke="#ffa032" stroke-width="10" stroke-linejoin="round"/>
+  </g>
+</svg>

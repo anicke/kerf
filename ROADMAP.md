@@ -194,7 +194,17 @@ From reviewing export against established editors.
   Windows and macOS for every push to `main` and pull request. Actions pinned to SHAs, cache
   written only by `main`, job timeouts, Dependabot with a 7-day cooldown; the repository allows
   only GitHub's actions and `Swatinem/rust-cache`, SHA-pinned).
-- **Packages:** Linux (AppImage and/or Flatpak), macOS (signed .dmg), Windows (installer).
+- ~~**Packages**~~ (done: the release workflow also builds a Linux AppImage (with pinned,
+  checksummed appimagetool and runtime; `kerf-cli`/`kerf-mcp` reachable through it), a macOS
+  .dmg per architecture with an ad-hoc signed `Kerf.app`, and a per-user Inno Setup installer
+  for Windows. An app icon (`packaging/icons`, SVG source) is in the window, `kerf.exe` and
+  every package; `.kerf` projects open from the file manager on Windows, and on Linux once the
+  AppImage is integrated). Still to do:
+  - *macOS:* opening `.kerf` from Finder. winit doesn't forward the open-document event, so it
+    needs our own `NSApplicationDelegate` installed before launch finishes; until then the
+    bundle declares no document types.
+  - *Linux:* Flatpak on Flathub (the desktop entry, MIME type and AppStream metadata in
+    `packaging/linux` are ready for it); a universal macOS build instead of two .dmg files.
 - ~~**Release workflow**~~ (done: a pushed `v*` tag checks the tag against `Cargo.toml`, builds
   Linux x86_64 (on Ubuntu 22.04 for an older glibc), macOS arm64 and x86_64 and Windows x86_64
   from the tagged source with no cache, waits for approval in the `release` environment, and

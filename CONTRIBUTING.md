@@ -28,6 +28,7 @@ contributors outside the project start once a maintainer approves them.
 | `kerf-app` | The egui desktop app and real-time playback. |
 | `kerf-cli` | The command-line tool. |
 | `kerf-mcp` | The MCP server for AI assistants. |
+| `packaging/` | Not a crate: the app icon (edit `icons/kerf.svg`, then run `icons/render.sh`), the AppImage, macOS bundle and Windows installer recipes the release workflow uses. |
 
 - **New capabilities go into `kerf_core::ops`** as a request type. The CLI's `run` command and
   the MCP server pick them up from there, so all three stay in step.
@@ -56,7 +57,8 @@ contributors outside the project start once a maintainer approves them.
 1. Set `version` in the workspace `Cargo.toml`, run `cargo check` so `Cargo.lock` follows, and
    merge that to `main`.
 2. Optionally run the *Release* workflow by hand on `main` (Actions → Release → Run workflow): it
-   builds every platform and keeps the archives as workflow artifacts without publishing.
+   builds every platform and keeps the archives and packages as workflow artifacts without
+   publishing. Try the packages from there before tagging.
 3. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`. The workflow refuses a tag that
    doesn't match `Cargo.toml`.
 4. Once the builds pass, approve the `release` environment. The release is then published with

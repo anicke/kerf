@@ -44,25 +44,42 @@ pub fn folders(configured: &[PathBuf]) -> Vec<PathBuf> {
     vec![dirs::home_dir().unwrap_or_else(|| std::env::current_dir().unwrap_or_default())]
 }
 
-/// How an MCP client starts the bridge: `kerf-mcp` next to this program if
-/// it's there, otherwise from the PATH.
-pub fn bridge_command() -> String {
+/// How an MCP client starts the bridge: the program and its arguments. That is
+/// `kerf-mcp` next to this program if it's there, otherwise from the PATH. Inside
+/// an AppImage, whose files sit in a mount that changes on every start, it is the
+/// AppImage itself, whose launcher runs the bundled `kerf-mcp` when asked to.
+pub fn bridge_command() -> (String, Vec<String>) {
+    bridge_for(
+        std::env::var_os("APPIMAGE").map(PathBuf::from),
+        std::env::current_exe().ok(),
+    )
+}
+
+fn bridge_for(appimage: Option<PathBuf>, exe: Option<PathBuf>) -> (String, Vec<String>) {
+    let app = vec!["--app".to_string()];
+    if let Some(image) = appimage.filter(|p| p.is_file()) {
+        let args = ["kerf-mcp".to_string()].into_iter().chain(app).collect();
+        return (image.display().to_string(), args);
+    }
     let name = if cfg!(windows) {
         "kerf-mcp.exe"
     } else {
         "kerf-mcp"
     };
-    std::env::current_exe()
-        .ok()
+    let cmd = exe
         .and_then(|e| e.parent().map(|d| d.join(name)))
         .filter(|p| p.is_file())
-        .map_or_else(|| name.to_string(), |p| p.display().to_string())
+        .map_or_else(|| name.to_string(), |p| p.display().to_string());
+    (cmd, app)
 }
 
 /// The client configuration to paste into Claude Desktop, Claude Code etc.
 pub fn client_config() -> String {
-    let cmd = serde_json::to_string(&bridge_command()).unwrap_or_default();
-    format!("{{\n  \"mcpServers\": {{\n    \"kerf\": {{ \"command\": {cmd}, \"args\": [\"--app\"] }}\n  }}\n}}")
+    let (cmd, args) = bridge_command();
+    let config = serde_json::json!({
+        "mcpServers": { "kerf": { "command": cmd, "args": args } }
+    });
+    serde_json::to_string_pretty(&config).unwrap_or_default()
 }
 
 impl Assistant {
@@ -244,5 +261,27 @@ mod tests {
     fn client_config_is_valid_json() {
         let v: serde_json::Value = serde_json::from_str(&client_config()).unwrap();
         assert_eq!(v["mcpServers"]["kerf"]["args"][0], "--app");
+    }
+
+    #[test]
+    fn bridge_runs_through_the_appimage_when_inside_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("Kerf.AppImage");
+        std::fs::write(&image, b"").unwrap();
+        let (cmd, args) = bridge_for(Some(image.clone()), None);
+        assert_eq!(cmd, image.display().to_string());
+        assert_eq!(args, ["kerf-mcp", "--app"]);
+
+        // A stale APPIMAGE (no such file) falls back to kerf-mcp next to the program.
+        let exe = dir.path().join("kerf");
+        let mcp = dir.path().join(if cfg!(windows) {
+            "kerf-mcp.exe"
+        } else {
+            "kerf-mcp"
+        });
+        std::fs::write(&mcp, b"").unwrap();
+        let (cmd, args) = bridge_for(Some(dir.path().join("gone")), Some(exe));
+        assert_eq!(cmd, mcp.display().to_string());
+        assert_eq!(args, ["--app"]);
     }
 }

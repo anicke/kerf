@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.anicke.Kerf</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <name>Kerf</name>
+  <summary>Precise audio editor for turning live recordings into albums</summary>
+  <description>
+    <p>
+      Kerf is a fast, precise, non-destructive audio editor. It finds where the songs in a
+      concert recording start, names them from a setlist, levels the whole show, tags the tracks
+      and exports FLAC, WAV or a CD image with a CUE sheet.
+    </p>
+    <p>
+      Edits are sample-exact and undoable without limit. A command-line tool and an MCP server
+      let scripts and AI assistants do the same work, including on the project open in the app.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.anicke.Kerf.desktop</launchable>
+  <provides>
+    <binary>kerf</binary>
+    <mediatype>application/x-kerf-project</mediatype>
+  </provides>
+  <developer id="io.github.anicke">
+    <name>The Kerf contributors</name>
+  </developer>
+  <url type="homepage">https://github.com/anicke/kerf</url>
+  <url type="bugtracker">https://github.com/anicke/kerf/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/anicke/kerf/main/docs/screenshot.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+</component>

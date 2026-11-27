@@ -1,0 +1,12 @@
+#!/bin/sh
+# Starts Kerf from the AppImage. `Kerf.AppImage kerf-cli …` and `Kerf.AppImage kerf-mcp …`
+# run the bundled command-line tool and MCP server instead.
+here="$(dirname "$(readlink -f "$0")")"
+case "${1-}" in
+    kerf-cli | kerf-mcp)
+        tool="$1"
+        shift
+        exec "$here/usr/bin/$tool" "$@"
+        ;;
+esac
+exec "$here/usr/bin/kerf" "$@"

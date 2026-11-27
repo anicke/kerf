@@ -1,8 +1,9 @@
 name: Release
 
-# A pushed `v*` tag builds every platform from a clean checkout, then waits in the `release`
-# environment for a reviewer before anything is published. The published release carries
-# SHA256SUMS and a build-provenance attestation for every archive:
+# A pushed `v*` tag builds every platform from a clean checkout, as an archive and as a package
+# (AppImage, .dmg, Windows installer), then waits in the `release` environment for a reviewer
+# before anything is published. The published release carries SHA256SUMS and a
+# build-provenance attestation for every file:
 #   gh attestation verify <archive> --repo anicke/kerf
 # Running the workflow by hand (workflow_dispatch) builds and uploads the archives as workflow
 # artifacts only: a dry run that never publishes.
@@ -24,6 +25,9 @@ jobs:
     name: tag matches Cargo.toml
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      label: ${{ steps.check.outputs.label }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,8 +35,10 @@ jobs:
       # The version comes from rust-toolchain.toml.
       - run: rustup toolchain install --profile minimal
       - name: Check
+        id: check
         env:
           REF_TYPE: ${{ github.ref_type }}
+          SHA: ${{ github.sha }}
           TAG: ${{ github.ref_name }}
         run: |
           version=$(cargo metadata --no-deps --format-version 1 \
@@ -40,10 +46,16 @@ jobs:
           echo "workspace version $version"
           if [ "$REF_TYPE" != "tag" ]; then
             echo "not a tag: dry run, nothing will be published"
+            label="dev-${SHA::7}"
           elif [ "$TAG" != "v$version" ]; then
             echo "tag $TAG does not match workspace version $version" >&2
             exit 1
+          else
+            label="$TAG"
           fi
+          # Names every file: kerf-<label>-<target>.tar.gz, kerf-<label>-linux-x86_64.AppImage…
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "label=$label" >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
@@ -56,10 +68,10 @@ jobs:
         include:
           # The oldest supported Ubuntu runner, so the binaries need only an older glibc and
           # run on more distributions.
-          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: macos-latest, target: x86_64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, platform: linux-x86_64 }
+          - { os: macos-latest, target: aarch64-apple-darwin, platform: macos-arm64 }
+          - { os: macos-latest, target: x86_64-apple-darwin, platform: macos-x86_64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, platform: windows-x86_64 }
     # No rust-cache here on purpose: a tag build can restore caches saved by main, and a
     # release should come from nothing but the tagged source and Cargo.lock.
     steps:
@@ -84,16 +96,13 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: cargo build --release --locked --target "$TARGET" -p kerf -p kerf-cli -p kerf-mcp
-      - name: Package
+      - name: Archive
         shell: bash
         env:
-          REF_NAME: ${{ github.ref_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          SHA: ${{ github.sha }}
+          LABEL: ${{ needs.version.outputs.label }}
           TARGET: ${{ matrix.target }}
         run: |
-          if [ "$REF_TYPE" = "tag" ]; then label="$REF_NAME"; else label="dev-${SHA::7}"; fi
-          name="kerf-$label-$TARGET"
+          name="kerf-$LABEL-$TARGET"
           mkdir -p "dist/$name"
           ext=""
           if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
@@ -108,6 +117,54 @@ jobs:
             tar czf "$name.tar.gz" "$name"
           fi
           rm -r "$name"
+      # appimagetool and the runtime it embeds, pinned by release and checksum.
+      - name: AppImage
+        if: runner.os == 'Linux'
+        env:
+          LABEL: ${{ needs.version.outputs.label }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          TOOL_URL: https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          TOOL_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
+          RUNTIME_URL: https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
+          RUNTIME_SHA256: 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d
+        run: |
+          tools="$RUNNER_TEMP/appimage"
+          mkdir -p "$tools"
+          curl -fsSL --retry 3 -o "$tools/appimagetool" "$TOOL_URL"
+          curl -fsSL --retry 3 -o "$tools/runtime" "$RUNTIME_URL"
+          printf '%s  %s\n' "$TOOL_SHA256" "$tools/appimagetool" "$RUNTIME_SHA256" "$tools/runtime" \
+            | sha256sum --check
+          chmod +x "$tools/appimagetool"
+          APPIMAGETOOL="$tools/appimagetool" APPIMAGE_RUNTIME="$tools/runtime" \
+            packaging/linux/build-appimage.sh "target/$TARGET/release" \
+            "dist/kerf-$LABEL-$PLATFORM.AppImage"
+          # Smoke test: the launcher reaches the bundled tools.
+          "dist/kerf-$LABEL-$PLATFORM.AppImage" --appimage-extract-and-run kerf-cli --version
+      - name: Disk image
+        if: runner.os == 'macOS'
+        env:
+          LABEL: ${{ needs.version.outputs.label }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          packaging/macos/build-dmg.sh "target/$TARGET/release" "$VERSION" \
+            "dist/kerf-$LABEL-$PLATFORM.dmg"
+      # Inno Setup comes with the Windows runner image.
+      - name: Installer
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          LABEL: ${{ needs.version.outputs.label }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" -Q \
+            "-DAppVersion=$VERSION" "-DBinDir=$(cygpath -w "target/$TARGET/release")" \
+            "-DOutputDir=$(cygpath -w dist)" "-DOutputName=kerf-$LABEL-$PLATFORM-setup" \
+            packaging/windows/kerf.iss
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.target }}
