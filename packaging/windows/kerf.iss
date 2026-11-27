@@ -1,5 +1,5 @@
 ; Inno Setup script for the Kerf installer. The release workflow compiles it with
-;   ISCC /DAppVersion=0.1.0 /DBinDir=<folder with the .exe files> /DOutputDir=dist
+;   ISCC /DAppVersion=0.1.0 /DBinDir=<absolute folder with the .exe files> /DOutputDir=<folder>
 ;        /DOutputName=Kerf-v0.1.0-x86_64-setup packaging\windows\kerf.iss
 ; It installs for the current user by default (no administrator prompt); the first page
 ; offers installing for all users instead.
