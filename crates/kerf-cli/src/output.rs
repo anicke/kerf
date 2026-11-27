@@ -195,6 +195,44 @@ fn print_response(r: &Response) {
             }
             println!("  {}", w.png_base64);
         }
+        Data::Compare(c) => {
+            let show = |v: Option<f64>| v.map_or("–".into(), |v| format!("{v:.1}"));
+            println!("  a: {} ({})", c.a, c.length_a.time);
+            println!("  b: {} ({})", c.b, c.length_b.time);
+            if c.identical {
+                return;
+            }
+            println!(
+                "  difference: peak {} dBFS, RMS {} dBFS, null depth {} dB",
+                show(c.peak_db),
+                show(c.rms_db),
+                show(c.null_depth_db)
+            );
+            for ch in &c.channels {
+                println!(
+                    "  channel {}: peak {} dBFS, {} samples differ",
+                    ch.channel,
+                    show(ch.peak_db),
+                    ch.differing_samples
+                );
+            }
+            const SHOWN: usize = 20;
+            for r in c.regions.iter().take(SHOWN) {
+                println!(
+                    "  {:>12} – {:<12} ({}, peak {} dBFS)",
+                    r.start.time,
+                    r.end.time,
+                    r.length.time,
+                    show(r.peak_db)
+                );
+            }
+            if c.region_count > SHOWN.min(c.regions.len()) {
+                println!(
+                    "  … {} more region(s)",
+                    c.region_count - SHOWN.min(c.regions.len())
+                );
+            }
+        }
         Data::None
         | Data::Levels(_)
         | Data::Track { .. }

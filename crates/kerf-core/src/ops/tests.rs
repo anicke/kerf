@@ -553,3 +553,245 @@ fn unedited_16_bit_audio_exports_bit_exact() {
         .iter()
         .all(|&v| v == 0.0));
 }
+
+/// A stereo WAV of noise-like audio (no repeating period, so alignment has
+/// one right answer), at `rate`.
+fn music(dir: &Path, name: &str, secs: f64, rate: u32) -> PathBuf {
+    let n = (secs * rate as f64) as usize;
+    let mut x = 0x9e37_79b9u32;
+    let ch: Vec<f32> = (0..n)
+        .map(|i| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x as f32 / u32::MAX as f32 - 0.5) * 0.4 + (i as f32 * 0.003).sin() * 0.2
+        })
+        .collect();
+    let r: Vec<f32> = ch.iter().rev().copied().collect();
+    let path = dir.join(name);
+    io::write_wav(
+        &path,
+        &AudioBuffer::new(rate, vec![ch, r]),
+        ExportSettings::default(),
+    )
+    .unwrap();
+    path
+}
+
+#[test]
+fn compare_finds_exactly_what_an_edit_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Session::new(None);
+    ok(
+        &mut s,
+        json!({"op": "open", "path": music(dir.path(), "m.wav", 4.0, SR)}),
+    );
+    ok(
+        &mut s,
+        json!({"op": "gain", "db": -6, "start": "1s", "end": "2s"}),
+    );
+    ok(&mut s, json!({"op": "split", "at": 3}));
+
+    // Against the opening state: only the second with the gain change differs.
+    let r = ok(&mut s, json!({"op": "compare", "b": {"history": 0}}));
+    assert_eq!(r["type"], "compare");
+    assert_eq!(
+        (r["identical"].clone(), r["nulls"].clone()),
+        (json!(false), json!(false))
+    );
+    assert_eq!(r["region_count"], 1);
+    assert_eq!(r["first_difference"]["frames"], SR);
+    assert_eq!(r["last_difference"]["frames"], 2 * SR - 1);
+    assert_eq!(r["regions"][0]["start"]["frames"], SR);
+    assert_eq!(r["regions"][0]["end"]["frames"], 2 * SR);
+    assert!(
+        r["summary"]
+            .as_str()
+            .unwrap()
+            .contains("differ in 1 region"),
+        "{r}"
+    );
+    assert!(
+        r["summary"].as_str().unwrap().contains("before any edit"),
+        "{r}"
+    );
+
+    // The split changed nothing audible: the states before and after it null.
+    let r = ok(
+        &mut s,
+        json!({"op": "compare", "a": {"history": 1}, "b": "project"}),
+    );
+    assert_eq!(r["identical"], true, "{r}");
+    assert!(
+        r["summary"].as_str().unwrap().starts_with("Identical"),
+        "{r}"
+    );
+
+    // A range limits both sides.
+    let r = ok(
+        &mut s,
+        json!({"op": "compare", "b": {"history": 0}, "start": "2s", "end": "4s"}),
+    );
+    assert_eq!(r["identical"], true, "{r}");
+
+    // Undone steps can be compared too.
+    ok(&mut s, json!({"op": "undo"}));
+    ok(&mut s, json!({"op": "undo"}));
+    let r = ok(&mut s, json!({"op": "compare", "b": {"history": 2}}));
+    assert_eq!(r["region_count"], 1);
+
+    assert_eq!(
+        err_code(&mut s, json!({"op": "compare", "b": {"history": 9}})),
+        "not_found"
+    );
+
+    // Importing into a new project makes the empty project a history state:
+    // compared with it, all of the audio is a difference.
+    let mut s = Session::new(None);
+    let wav = music(dir.path(), "n.wav", 2.0, SR);
+    ok(&mut s, json!({"op": "import", "path": wav}));
+    let r = ok(&mut s, json!({"op": "compare", "b": {"history": 0}}));
+    assert_eq!(r["length_b"]["frames"], 0);
+    assert_eq!(r["length_a"]["frames"], 2 * SR);
+    assert_eq!(r["region_count"], 1);
+    assert_eq!(r["regions"][0]["end"]["frames"], 2 * SR);
+    assert!(r["b"].as_str().unwrap().ends_with("(empty)"), "{r}");
+    let r = ok(
+        &mut s,
+        json!({"op": "compare", "a": {"history": 0}, "b": "project"}),
+    );
+    assert_eq!(r["length_b"]["frames"], 2 * SR);
+    let v = run(
+        &mut s,
+        json!({"op": "compare", "a": {"history": 0}, "b": {"history": 0}}),
+    );
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("both empty"),
+        "{v}"
+    );
+}
+
+#[test]
+fn compare_checks_exports_against_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Session::new(None);
+    ok(
+        &mut s,
+        json!({"op": "open", "path": music(dir.path(), "m.wav", 13.0, SR)}),
+    );
+    ok(&mut s, json!({"op": "gain", "db": -3}));
+
+    // A float export is the project, bit for bit.
+    let wav = dir.path().join("mix.wav");
+    ok(
+        &mut s,
+        json!({"op": "export", "path": wav, "preset": "wav"}),
+    );
+    let r = ok(&mut s, json!({"op": "compare", "b": {"file": wav}}));
+    assert_eq!(r["identical"], true, "{r}");
+
+    // A 16-bit CD export only differs by rounding and dither.
+    let cd = dir.path().join("cd.wav");
+    ok(&mut s, json!({"op": "export", "path": cd, "preset": "cd"}));
+    let r = ok(&mut s, json!({"op": "compare", "b": {"file": cd}}));
+    assert_eq!(r["nulls"], false);
+    let depth = r["null_depth_db"].as_f64().unwrap();
+    assert!(depth < -70.0, "{r}");
+    let r = ok(
+        &mut s,
+        json!({"op": "compare", "b": {"file": cd}, "threshold_db": -80}),
+    );
+    assert_eq!(
+        (r["nulls"].clone(), r["identical"].clone()),
+        (json!(true), json!(false)),
+        "{r}"
+    );
+    assert!(r["summary"].as_str().unwrap().contains("null"), "{r}");
+
+    // An export of 0.5 s onwards lines up with alignment.
+    let part = dir.path().join("part.wav");
+    ok(
+        &mut s,
+        json!({"op": "export", "path": part, "preset": "wav", "start": 0.5}),
+    );
+    let r = ok(&mut s, json!({"op": "compare", "b": {"file": part}}));
+    assert_eq!(r["nulls"], false);
+    let r = ok(
+        &mut s,
+        json!({"op": "compare", "b": {"file": part}, "align": true}),
+    );
+    assert_eq!(r["alignment"]["found"], true, "{r}");
+    assert_eq!(r["alignment"]["offset_frames"], -(SR as i64 / 2));
+    assert_eq!(r["identical"], true, "{r}");
+
+    // A saved project renders the same as the project it was saved from.
+    let saved = dir.path().join("show.kerf");
+    ok(&mut s, json!({"op": "save", "path": saved}));
+    ok(&mut s, json!({"op": "gain", "db": 1}));
+    let r = ok(
+        &mut s,
+        json!({"op": "compare", "a": {"file": saved}, "b": {"history": 1}}),
+    );
+    assert_eq!(r["identical"], true, "{r}");
+    let r = ok(&mut s, json!({"op": "compare", "b": {"file": saved}}));
+    assert_eq!(r["identical"], false);
+
+    // Mismatched formats and missing files are refused clearly.
+    let other = music(dir.path(), "48k.wav", 1.0, 48_000);
+    let v = run(&mut s, json!({"op": "compare", "b": {"file": other}}));
+    assert_eq!(v["error"]["code"], "invalid_argument", "{v}");
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains("48000 Hz"),
+        "{v}"
+    );
+    let missing = dir.path().join("nope.wav");
+    assert_eq!(
+        err_code(&mut s, json!({"op": "compare", "b": {"file": missing}})),
+        "not_found"
+    );
+    assert_eq!(
+        err_code(
+            &mut s,
+            json!({"op": "compare", "b": "project", "threshold_db": 3})
+        ),
+        "invalid_argument"
+    );
+}
+
+#[test]
+fn compare_requests_and_responses_round_trip() {
+    let r: Request = serde_json::from_value(json!({"op": "compare", "b": {"history": 0}})).unwrap();
+    assert_eq!(
+        r,
+        Request::Compare {
+            a: Version::Project,
+            b: Version::History(0),
+            start: None,
+            end: None,
+            tracks: None,
+            align: false,
+            max_offset_secs: None,
+            threshold_db: None,
+        }
+    );
+    let j = serde_json::to_value(&r).unwrap();
+    assert_eq!(j["a"], "project");
+    assert_eq!(serde_json::from_value::<Request>(j).unwrap(), r);
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = Session::new(None);
+    ok(
+        &mut s,
+        json!({"op": "open", "path": tone(dir.path(), "a.wav", 1.0)}),
+    );
+    ok(
+        &mut s,
+        json!({"op": "gain", "db": -1, "start": 0.2, "end": 0.4}),
+    );
+    let resp = s.execute(r).unwrap();
+    let j = serde_json::to_string(&resp).unwrap();
+    assert_eq!(serde_json::from_str::<Response>(&j).unwrap(), resp, "{j}");
+}

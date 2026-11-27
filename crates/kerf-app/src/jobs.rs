@@ -28,6 +28,8 @@ pub enum JobDone {
         Result<kerf_core::album::AlbumAnalysis, String>,
         crate::album_ui::AudioFingerprint,
     ),
+    /// A comparison, with the document revision it was made at.
+    Compared(Result<crate::compare_ui::Done, String>, u64),
     /// Song-start analysis, with the tracks and document revision it was made from.
     Analyzed(
         Result<kerf_core::detect::Analysis, String>,

@@ -9,6 +9,7 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
     let states = app.doc.history_states();
     let pos = app.doc.history_position();
     let mut jump = None;
+    let mut compare = None;
 
     ui.horizontal(|ui| {
         ui.heading("History");
@@ -59,12 +60,32 @@ pub fn show(app: &mut KerfApp, ui: &mut egui::Ui) {
                 if r.clicked() && i != pos {
                     jump = Some(i);
                 }
+                r.context_menu(|ui| {
+                    if ui
+                        .add_enabled(i != pos, egui::Button::new("Compare with Current State"))
+                        .on_hover_text("Null test: what differs between this step and now?")
+                        .clicked()
+                    {
+                        compare = Some(i);
+                        ui.close();
+                    }
+                });
                 if i == pos && moved {
                     r.scroll_to_me(Some(egui::Align::Center));
                 }
             }
         });
 
+    if let Some(i) = compare {
+        let title = match states[i].label {
+            Some(l) => format!("the state after \"{l}\""),
+            None => "the start of the history".into(),
+        };
+        drop(states);
+        let ctx = ui.ctx().clone();
+        app.compare_with(&ctx, kerf_core::ops::Version::History(i), title);
+        return;
+    }
     if let Some(i) = jump {
         let label = states[i].label.map(String::from);
         drop(states);

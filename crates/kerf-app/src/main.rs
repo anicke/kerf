@@ -4,6 +4,7 @@ mod album_ui;
 mod app;
 mod assistant;
 mod audio;
+mod compare_ui;
 mod detect_ui;
 mod history_panel;
 mod icons;

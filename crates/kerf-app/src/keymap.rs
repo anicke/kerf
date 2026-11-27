@@ -149,6 +149,7 @@ pub const COMMANDS: &[Command] = commands! {
         "export_stems", "Export tracks as stems…", A::Export(ExportKind::Stems), [];
         "export_cue", "Export CUE sheet…", A::Export(ExportKind::CueSheet), [];
         "album", "Album…", A::Album, ["Ctrl+Shift+A"];
+        "compare_file", "Compare with file…", A::CompareFile, [];
         "audio_cache", "Audio cache…", A::AudioCache, [];
         "quit", "Quit", A::Quit, ["Ctrl+Q"];
     }

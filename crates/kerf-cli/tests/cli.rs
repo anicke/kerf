@@ -291,3 +291,48 @@ fn waveform_png() {
     let o = kerf(&["waveform", s(&show), "-o", s(&png)]);
     assert_eq!(o.status.code(), Some(2), "won't overwrite without --force");
 }
+
+#[test]
+fn compare_exits_like_cmp() {
+    let dir = tempfile::tempdir().unwrap();
+    let show = live_show(dir.path());
+    let s = show.to_str().unwrap();
+    let copy = dir.path().join("copy.wav");
+    let quieter = dir.path().join("quieter.wav");
+    assert!(kerf(&["export", s, "--out", copy.to_str().unwrap()])
+        .status
+        .success());
+    let ops = dir.path().join("ops.json");
+    std::fs::write(
+        &ops,
+        format!(
+            r#"[{{"op": "gain", "db": -1, "start": 20, "end": 21}},
+               {{"op": "export", "path": {:?}}}]"#,
+            quieter
+        ),
+    )
+    .unwrap();
+    assert!(kerf(&["run", "--ops", ops.to_str().unwrap(), s])
+        .status
+        .success());
+
+    let same = kerf(&["compare", s, copy.to_str().unwrap()]);
+    assert_eq!(same.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&same.stdout).starts_with("Identical"));
+
+    let out = kerf(&["compare", s, quieter.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "they differ");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("differ in 1 region(s) at 0:20.000"), "{text}");
+    assert!(text.contains("0:20.000 – 0:21.000"), "{text}");
+
+    let (exit_ok, v) = json(&["compare", s, quieter.to_str().unwrap()]);
+    assert!(!exit_ok, "exit status 1: they differ");
+    assert_eq!(v["ok"], true, "but the comparison itself worked");
+    let r = &v["steps"][0]["result"];
+    assert_eq!(r["regions"][0]["start"]["frames"], 20 * SR);
+    assert_eq!(r["regions"][0]["end"]["frames"], 21 * SR);
+
+    let missing = kerf(&["compare", s, "no-such.wav"]);
+    assert_eq!(missing.status.code(), Some(2), "errors are not differences");
+}

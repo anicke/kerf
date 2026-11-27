@@ -155,6 +155,9 @@ impl KerfApp {
                 EditorRequest::Snapshot(reply) => {
                     let _ = reply.send(Snapshot::of(&self.doc));
                 }
+                EditorRequest::Document(reply) => {
+                    let _ = reply.send(self.doc.clone());
+                }
                 msg @ (EditorRequest::Commit { .. } | EditorRequest::Direct { .. }) if busy => {
                     held.push(msg);
                 }

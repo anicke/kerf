@@ -229,6 +229,21 @@ pub struct ExportOptions {
     pub names: Option<String>,
 }
 
+/// A version of the audio to compare. In JSON: `"project"` (as it is now),
+/// `{"history": 2}` (a state in the undo history: 0 is before the first step
+/// `history` lists, n after the n-th; numbers past the current state are
+/// undone steps that can be redone) or `{"file": "mix.wav"}` (an audio file
+/// or a saved `.kerf` project).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Version {
+    #[default]
+    Project,
+    History(usize),
+    File(PathBuf),
+}
+
 /// One operation. In JSON: `{"op": "split", "at": "1:23.5"}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -310,6 +325,35 @@ pub enum Request {
         setlist: Vec<String>,
         #[serde(default)]
         apply: bool,
+    },
+
+    /// Null test: compare two versions sample by sample, e.g. the project now
+    /// against an earlier history state (did an edit change anything else?)
+    /// or against an exported file (does it match?). Reports whether they are
+    /// identical, the peak and RMS of the difference, how far below the
+    /// signal it lies, and the time ranges where they differ. `start`/`end`
+    /// limit both sides (times in each); `tracks` applies to project versions.
+    Compare {
+        /// Default: the project as it is now.
+        #[serde(default)]
+        a: Version,
+        b: Version,
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+        /// First shift `b` by whole frames to line it up with `a` (extra
+        /// lead-in, encoder delay), searching up to `max_offset_secs` (default 1).
+        #[serde(default)]
+        align: bool,
+        #[serde(default)]
+        max_offset_secs: Option<f64>,
+        /// Ignore differences at or below this level (dBFS), e.g. -90 to
+        /// accept 16-bit rounding or dither. Default: any difference counts.
+        #[serde(default)]
+        threshold_db: Option<f64>,
     },
 
     /// Ranges quieter than `threshold_db` (peak, dBFS; default -50) for at
@@ -560,6 +604,7 @@ pub enum Data {
     Album(AlbumReport),
     AlbumLoudness(LoudnessChange),
     Export(ExportReport),
+    Compare(Box<CompareInfo>),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -703,6 +748,69 @@ pub struct WaveformMarker {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CompareInfo {
+    /// What was compared, e.g. "the project", "history state 3 (after \"Split\")".
+    pub a: String,
+    pub b: String,
+    /// Same length and every sample equal, bit for bit.
+    pub identical: bool,
+    /// No difference above the threshold, over the same length.
+    pub nulls: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold_db: Option<f64>,
+    /// Lengths compared (after any alignment). Where one is shorter, the
+    /// rest of the other is compared against silence.
+    pub length_a: TimePos,
+    pub length_b: TimePos,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alignment: Option<AlignmentInfo>,
+    /// Frames where any channel differs (above the threshold).
+    pub differing_frames: u64,
+    /// Positions are in `a`'s time.
+    pub first_difference: Option<TimePos>,
+    pub last_difference: Option<TimePos>,
+    /// Largest difference between samples (dBFS); `None` if none.
+    pub peak_db: Option<f64>,
+    pub rms_db: Option<f64>,
+    /// RMS of the difference relative to `a`'s (dB): how deep the null is.
+    /// -96 is about 16-bit rounding noise.
+    pub null_depth_db: Option<f64>,
+    pub channels: Vec<ChannelDifference>,
+    /// Where they differ (differences under 0.1 s apart are joined).
+    pub regions: Vec<DiffSpan>,
+    /// More regions were found than are listed.
+    pub truncated: bool,
+    pub region_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AlignmentInfo {
+    /// Frames `b` starts later than `a` (negative: earlier), skipped before comparing.
+    pub offset_frames: i64,
+    pub offset_secs: f64,
+    /// How well the openings matched, 0..1.
+    pub correlation: f64,
+    /// Whether a match was found; if not, nothing was shifted.
+    pub found: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChannelDifference {
+    pub channel: usize,
+    pub peak_db: Option<f64>,
+    pub rms_db: Option<f64>,
+    pub differing_samples: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DiffSpan {
+    pub start: TimePos,
+    pub end: TimePos,
+    pub length: TimePos,
+    pub peak_db: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NormalizedTrack {
     pub track: u64,
     pub measured: Option<f64>,
@@ -830,7 +938,7 @@ impl From<crate::Error> for OpError {
             E::Silent => ErrorCode::Silent,
             E::Cancelled => ErrorCode::Cancelled,
             E::Unsupported(_) => ErrorCode::Unsupported,
-            E::Naming(_) => ErrorCode::InvalidArgument,
+            E::Naming(_) | E::Mismatch(_) => ErrorCode::InvalidArgument,
         };
         Self::new(code, e.to_string())
     }

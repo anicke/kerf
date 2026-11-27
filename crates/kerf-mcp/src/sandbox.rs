@@ -4,7 +4,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use kerf_core::ops::Request;
+use kerf_core::ops::{Request, Version};
 
 #[derive(Clone, Debug)]
 pub struct Sandbox {
@@ -81,6 +81,13 @@ impl Sandbox {
             Request::Open { path, .. } | Request::Import { path, .. } => vec![path],
             Request::Save { path, .. } => path.iter_mut().collect(),
             Request::Export { path, .. } => vec![path],
+            Request::Compare { a, b, .. } => [a, b]
+                .into_iter()
+                .filter_map(|v| match v {
+                    Version::File(p) => Some(p),
+                    _ => None,
+                })
+                .collect(),
             Request::SetAlbum { cover, .. } => cover
                 .iter_mut()
                 .filter(|c| !c.as_os_str().is_empty())
@@ -150,5 +157,25 @@ mod tests {
             })
             .is_err());
         assert!(sb.check(Request::Undo).is_ok());
+
+        let compare = |b: &str| Request::Compare {
+            a: Version::History(0),
+            b: Version::File(b.into()),
+            start: None,
+            end: None,
+            tracks: None,
+            align: false,
+            max_offset_secs: None,
+            threshold_db: None,
+        };
+        let Request::Compare { a, b, .. } = sb.check(compare("show/a.wav")).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(a, Version::History(0));
+        assert_eq!(b, Version::File(music.join("show/a.wav")));
+        assert!(
+            sb.check(compare("/etc/passwd")).is_err(),
+            "files to compare stay inside too"
+        );
     }
 }

@@ -92,6 +92,14 @@ done, what's next, and known limitations.
   selection edges and splits to zero crossings to avoid clicks (Edit menu; Shift+Z moves the current
   selection). Vertical zoom (Ctrl+↑/↓ or Alt+wheel) and a dB waveform scale (D) reveal quiet detail;
   each track can be made taller or shorter on its own.
+- **Null test.** Prove an edit changed only what it should: right-click a step in the History
+  panel and choose *Compare with Current State*, or compare the project with a file (*File →
+  Compare with File…*: an export, another take, a saved project). Kerf subtracts the two sample by
+  sample and says whether they are identical bit for bit; if not, it gives the peak and RMS of the
+  difference, how far below the signal it lies (the null depth), and every stretch where they
+  differ, to the sample; click one to select it. It can first line the two up (a file with extra
+  lead-in or an encoder delay) and ignore differences below a level, e.g. the -96 dB of 16-bit
+  rounding and dither.
 - **Crash recovery.** Unsaved work is snapshotted every minute (configurable). If Kerf doesn't close
   normally, it offers to recover the work on the next start. Snapshots are tiny: audio is
   referenced, and rendered audio stays in the cache.
@@ -174,7 +182,8 @@ falls back to keeping audio in memory.
 
 `kerf-cli` runs the same engine without the GUI, for batch work and scripts. Every command prints
 a readable report, or one JSON document per input with `--json`. Nothing is overwritten without
-`--force`, `--dry-run` shows exactly which files would be written, and a failed run exits non-zero.
+`--force`, `--dry-run` shows exactly which files would be written, and a failed run exits non-zero
+(`compare` exits like `cmp`: 0 when the inputs null, 1 when they differ, 2 on errors).
 
 ```sh
 # A live show to a finished album: find 14 songs, name them from the setlist, tag, level the
@@ -190,12 +199,14 @@ kerf-cli export show.kerf --kind tracks --preset flac --out flac/ --dry-run
 kerf-cli export show.kerf --kind tracks --preset flac --out music/ \
     --names "{artist} - {album} ({year})/{nn} {title}"   # file names, with folders
 kerf-cli waveform show.kerf -o show.png --db        # a picture: peaks, RMS, clipping, markers
+kerf-cli compare show.kerf album.wav --threshold -90 # null test: does the export match?
 kerf-cli run --ops edits.jsonl show.wav             # any operation, as JSON
 ```
 
 Times are seconds (`83.5`), `m:ss` (`1:23.5`), `h:mm:ss`, or exact samples (`4008000smp`).
 `kerf-cli run` accepts any engine operation (open, import, save, undo/redo, split, delete, clear,
-crop, copy/cut/paste, gain, normalize, fades, markers, album details and loudness, export) as a
+crop, copy/cut/paste, gain, normalize, fades, markers, album details and loudness, export,
+compare) as a
 JSON array or one object per line, e.g. `{"op": "fade_out", "start": "41:10", "end": "41:18"}`.
 These are the operations of `kerf_core::ops`, which the MCP server exposes too.
 
@@ -217,7 +228,8 @@ configuration, naming the folders it may use:
   types so they always match. Each returns a one-line summary plus details as JSON.
 - **Seeing audio:** an assistant can't listen, so `waveform` returns a picture of any range
   (zoom in by choosing start and end), and `analyze`, `find_silences` and `detect_songs` report
-  levels and positions.
+  levels and positions. `compare` is a null test: against an earlier `history` state it shows
+  exactly what an edit changed, and against an exported file that the export matches.
 - **Safe by design:** every edit is one undoable step; `open` and `new` won't drop unsaved changes
   unless asked; exports never overwrite without `force`, and dry runs show exactly what would be
   written; files are only read or written inside the `--allow` folders (default: the folder it

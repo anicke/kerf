@@ -22,6 +22,7 @@ pub use types::*;
 
 use crate::album;
 use crate::cache::AudioCache;
+use crate::compare::{self, CompareOptions, DecoderReader, Empty, ProjectReader, Reader};
 use crate::detect::{self, DetectSettings, Placement};
 use crate::dither::Dither;
 use crate::document::Document;
@@ -39,6 +40,71 @@ type OpResult<T = Response> = std::result::Result<T, OpError>;
 /// Finite dB values only: silence (`-inf`) becomes `None` (JSON has no infinity).
 fn db(v: f64) -> Option<f64> {
     v.is_finite().then(|| (v * 100.0).round() / 100.0)
+}
+
+fn compare_summary(c: &CompareInfo, rate: u32) -> String {
+    let mut s = compare_sentence(c, rate);
+    if let Some(first) = s.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    s
+}
+
+fn compare_sentence(c: &CompareInfo, rate: u32) -> String {
+    let show = |v: Option<f64>| v.map_or("–".into(), |v| format!("{v:.1}"));
+    let mut s = if c.identical {
+        format!(
+            "Identical: {} and {} match bit for bit ({})",
+            c.a, c.b, c.length_a.time
+        )
+    } else if c.nulls {
+        format!(
+            "{} and {} null: no difference above {} dBFS (largest {} dBFS)",
+            c.a,
+            c.b,
+            show(c.threshold_db),
+            show(c.peak_db)
+        )
+    } else if c.differing_frames == 0 {
+        format!("{} and {} match where both have audio", c.a, c.b)
+    } else {
+        let span = match (&c.first_difference, &c.last_difference) {
+            (Some(f), Some(l)) if c.region_count > 1 => format!(" from {} to {}", f.time, l.time),
+            (Some(f), _) => format!(" at {}", f.time),
+            _ => String::new(),
+        };
+        format!(
+            "{} and {} differ in {} region(s){span}: peak difference {} dBFS, null depth {} dB",
+            c.a,
+            c.b,
+            c.region_count,
+            show(c.peak_db),
+            show(c.null_depth_db)
+        )
+    };
+    let (fa, fb) = (c.length_a.frames, c.length_b.frames);
+    if fa != fb {
+        let (longer, by) = if fb > fa {
+            ("b", fb - fa)
+        } else {
+            ("a", fa - fb)
+        };
+        s += &format!(
+            "; {longer} is longer by {} ({by} frames)",
+            crate::util::format_time(by, rate)
+        );
+    }
+    if let Some(al) = &c.alignment {
+        s += &if al.found {
+            format!(
+                "; b shifted by {} frames ({:.3} s) to line up",
+                al.offset_frames, al.offset_secs
+            )
+        } else {
+            "; no alignment found (openings too different or silent), compared unshifted".into()
+        };
+    }
+    s
 }
 
 fn done(summary: impl Into<String>) -> Response {
@@ -234,6 +300,7 @@ impl Session {
                 )
             }
 
+            req @ R::Compare { .. } => self.compare(req, progress),
             R::FindSilences {
                 threshold_db,
                 min_secs,
@@ -821,6 +888,214 @@ impl Session {
                 }
             ),
             data: Data::Levels(levels),
+        })
+    }
+
+    /// A version to compare, as a reader over `start..end`, with a description
+    /// and the frame it starts at.
+    fn version_reader(
+        &self,
+        v: &Version,
+        start: Option<&Time>,
+        end: Option<&Time>,
+        tracks: Option<&[u64]>,
+    ) -> OpResult<(Box<dyn Reader>, String, Frame)> {
+        let project = |p: Project, what: String| -> OpResult<(Box<dyn Reader>, String, Frame)> {
+            if p.is_empty() {
+                // Its format is unknown: `compare` gives it the other side's.
+                return Ok((Box::new(Empty::new(0, 0)), format!("{what} (empty)"), 0));
+            }
+            let rate = p.sample_rate;
+            let at = |t: Option<&Time>| {
+                t.map(|t| {
+                    t.to_frames(rate)
+                        .ok_or_else(|| OpError::arg(format!("invalid time {t:?}")))
+                })
+                .transpose()
+            };
+            let a = at(start)?.unwrap_or(0);
+            let b = at(end)?.unwrap_or(p.length());
+            if b <= a {
+                return Err(OpError::new(
+                    ErrorCode::InvalidRange,
+                    if p.length() == 0 {
+                        format!("{what} is empty")
+                    } else {
+                        "end must be after start".to_string()
+                    },
+                ));
+            }
+            let opts = match tracks {
+                Some(ids) => {
+                    RenderOptions::tracks(ids.iter().map(|&i| TrackId(i)).collect::<Vec<_>>())
+                }
+                None => RenderOptions::default(),
+            };
+            Ok((Box::new(ProjectReader::new(p, a, b, opts)), what, a))
+        };
+        match v {
+            Version::Project => project(self.project().clone(), "the project".into()),
+            Version::History(i) => {
+                let states = self.doc.history_states();
+                let p = self.doc.state(*i).ok_or_else(|| {
+                    OpError::new(
+                        ErrorCode::NotFound,
+                        format!(
+                            "no history state {i}: there are {} (0 to {}; now at {})",
+                            states.len(),
+                            states.len() - 1,
+                            self.doc.history_position()
+                        ),
+                    )
+                })?;
+                let what = match states[*i].label {
+                    Some(l) => format!("history state {i} (after \"{l}\")"),
+                    None => format!("history state {i} (before any edit)"),
+                };
+                project(p.clone(), what)
+            }
+            Version::File(path) => {
+                if !path.exists() {
+                    return Err(OpError::new(
+                        ErrorCode::NotFound,
+                        format!("{} not found", path.display()),
+                    ));
+                }
+                let what = path.display().to_string();
+                if path
+                    .extension()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(session::PROJECT_EXTENSION))
+                {
+                    return project(session::load(path, self.cache.clone())?, what);
+                }
+                let r: Box<dyn Reader> = Box::new(DecoderReader::new(crate::decode::open(path)?));
+                let rate = r.sample_rate();
+                let at = |t: &Time| {
+                    t.to_frames(rate)
+                        .ok_or_else(|| OpError::arg(format!("invalid time {t:?}")))
+                };
+                let a = start.map(at).transpose()?.unwrap_or(0);
+                let b = end.map(at).transpose()?;
+                if b.is_some_and(|b| b <= a) {
+                    return Err(OpError::new(
+                        ErrorCode::InvalidRange,
+                        "end must be after start",
+                    ));
+                }
+                Ok((compare::slice(r, a, b)?, what, a))
+            }
+        }
+    }
+
+    fn compare(&self, req: Request, progress: Progress) -> OpResult {
+        let Request::Compare {
+            a,
+            b,
+            start,
+            end,
+            tracks,
+            align,
+            max_offset_secs,
+            threshold_db,
+        } = req
+        else {
+            unreachable!("only called for compare")
+        };
+        let (start, end) = (start.as_ref(), end.as_ref());
+        let (ra, name_a, start_a) = self.version_reader(&a, start, end, tracks.as_deref())?;
+        let (rb, name_b, _) = self.version_reader(&b, start, end, tracks.as_deref())?;
+        // An empty project takes the format of what it is compared with.
+        let like = |r: &dyn Reader| -> Box<dyn Reader> {
+            Box::new(Empty::new(r.sample_rate(), r.channels()))
+        };
+        let (ra, rb) = match (ra.sample_rate() == 0, rb.sample_rate() == 0) {
+            (true, true) => {
+                return Err(OpError::new(
+                    ErrorCode::InvalidRange,
+                    format!("{name_a} and {name_b} are both empty"),
+                ))
+            }
+            (true, false) => (like(rb.as_ref()), rb),
+            (false, true) => {
+                let empty = like(ra.as_ref());
+                (ra, empty)
+            }
+            (false, false) => (ra, rb),
+        };
+        let rate = ra.sample_rate();
+        let mut opts = CompareOptions::new(rate);
+        opts.align = align;
+        if let Some(s) = max_offset_secs {
+            if !(0.0..=60.0).contains(&s) {
+                return Err(OpError::arg("max_offset_secs must be 0 to 60"));
+            }
+            opts.max_offset = (s * rate as f64).round() as u64;
+        }
+        if let Some(t) = threshold_db {
+            if !t.is_finite() || t > 0.0 {
+                return Err(OpError::arg(
+                    "threshold_db must be a level in dBFS, at most 0",
+                ));
+            }
+            opts.threshold = crate::util::db_to_gain(t) as f32;
+        }
+        let r = compare::compare(ra, rb, &opts, progress)?;
+
+        let skip_a = r
+            .alignment
+            .as_ref()
+            .map_or(0, |al| (-al.offset).max(0) as Frame);
+        let at = |f: Frame| TimePos::new(start_a + skip_a + f, rate);
+        let lin_db = |v: f64| db(gain_to_db(v));
+        const LISTED: usize = 100;
+        let info = CompareInfo {
+            a: name_a.clone(),
+            b: name_b.clone(),
+            identical: r.identical,
+            nulls: r.nulls(),
+            threshold_db: threshold_db.and_then(db),
+            length_a: TimePos::new(r.frames_a, rate),
+            length_b: TimePos::new(r.frames_b, rate),
+            alignment: r.alignment.as_ref().map(|al| AlignmentInfo {
+                offset_frames: al.offset,
+                offset_secs: (al.offset as f64 / rate as f64 * 1e6).round() / 1e6,
+                correlation: al.correlation,
+                found: al.found,
+            }),
+            differing_frames: r.differing_frames,
+            first_difference: r.first_difference.map(at),
+            last_difference: r.last_difference.map(at),
+            peak_db: lin_db(r.peak as f64),
+            rms_db: lin_db(r.rms),
+            null_depth_db: r.null_depth_db().and_then(db),
+            channels: r
+                .per_channel
+                .iter()
+                .enumerate()
+                .map(|(i, c)| ChannelDifference {
+                    channel: i + 1,
+                    peak_db: lin_db(c.peak as f64),
+                    rms_db: lin_db(c.rms),
+                    differing_samples: c.differing_samples,
+                })
+                .collect(),
+            regions: r
+                .regions
+                .iter()
+                .take(LISTED)
+                .map(|g| DiffSpan {
+                    start: at(g.start),
+                    end: at(g.end),
+                    length: TimePos::new(g.end - g.start, rate),
+                    peak_db: lin_db(g.peak as f64),
+                })
+                .collect(),
+            truncated: r.region_count > LISTED,
+            region_count: r.region_count,
+        };
+        Ok(Response {
+            summary: compare_summary(&info, rate),
+            data: Data::Compare(Box::new(info)),
         })
     }
 

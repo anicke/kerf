@@ -18,8 +18,9 @@ export with an Audio CD preset; keyboard navigation, markers panel, crash recove
 device selection; scrubbing and J/K/L shuttle; an undo history panel; a statistics panel with true
 peak, loudness range and a live loudness meter; customisable keyboard shortcuts; typed times and formats, zero-crossing snap, vertical zoom and dB view; tagged
 FLAC export, album loudness and the Album window; a JSON operations layer and the `kerf-cli`
-command-line tool; the `kerf-mcp` MCP server with waveform images, also working live inside the app; FFmpeg as an
-optional decoder.
+command-line tool; the `kerf-mcp` MCP server with waveform images, also working live inside the app; a sample-exact null test
+against history states and files; FFmpeg as an optional decoder; packages for Linux, macOS and
+Windows.
 
 ## Positioning: what makes Kerf stand out
 
@@ -86,7 +87,8 @@ Size: about 2–3 days.
 **Status:** done. `kerf-mcp` (stdio, `rmcp` 3.11) serves one tool per `ops` request, generated
 from its JSON Schema; `waveform` (PNG) and `find_silences` were added to `ops` (and the CLI).
 Resources, the `prepare_live_album` prompt, progress and cancellation, and an `--allow` folder
-sandbox are in. Deferred to Phase 5: checkpoint/compare and the null test. Audio content is not
+sandbox are in. Compare and the null test came with Phase 5 (`compare` against history states
+or files); named checkpoints wait for A/B. Audio content is not
 sent to the model.
 
 Lets any MCP client (Claude Desktop, Claude Code, IDEs) drive Kerf with no shell access.
@@ -141,6 +143,15 @@ happen on the timeline**, with every step in normal undo. You can stop it, adjus
 Size: about 2–3 days, given Phase 3.
 
 ## Phase 5: A/B alternatives and null test
+
+**Status:** null test done: `kerf_core::compare` streams two versions (the project now, any
+undo-history state, an audio file or a saved project) and reports bit-identity, peak/RMS of the
+difference, null depth, per-channel figures and every differing region to the sample, with optional
+alignment (FFT cross-correlation of the openings, whole-sample shifts up to a set maximum) and an
+ignore-below threshold. It is the `compare` operation (CLI `kerf-cli compare`, exiting like `cmp`;
+MCP tool, including in the app, where it can read the open project's history) and the app's
+Compare window (History panel context menu, *File → Compare with File…*). A/B alternatives are
+next.
 
 - **A/B alternatives:** mark the current state as A, try a different crossfade, cut or level as B,
   and flip between them **during playback** with one key, staying in sync. Built on project

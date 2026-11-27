@@ -27,6 +27,9 @@ pub enum Error {
     /// A file-name template that can't be used, or names that clash.
     #[error("file names: {0}")]
     Naming(String),
+    /// Audio that can't be compared or combined, e.g. different sample rates.
+    #[error("{0}")]
+    Mismatch(String),
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

@@ -266,6 +266,7 @@ pub enum Dialog {
     DetectSongs(Box<crate::detect_ui::DetectState>),
     Preferences(Box<PrefsDraft>),
     Album(Box<crate::album_ui::AlbumState>),
+    Compare(Box<crate::compare_ui::CompareState>),
     Recover(Vec<crate::recovery::Orphan>),
     Recent(crate::recent::QuickOpen),
     Shortcuts(crate::shortcuts_ui::Editor),
@@ -367,6 +368,8 @@ pub enum Action {
     ToggleStatsPanel,
     Preferences,
     Album,
+    /// Null test of the project against a file.
+    CompareFile,
     ZeroCrossings,
     ToggleZeroCrossingSnap,
     SelectSong,
@@ -1007,6 +1010,23 @@ impl KerfApp {
             ResetTrackHeights => self.view.reset_track_heights(),
             ToggleDbScale => self.view.db_scale = !self.view.db_scale,
             Album => self.dialog = Some(Dialog::Album(Box::default())),
+            CompareFile => {
+                let mut exts = kerf_core::io::IMPORT_EXTENSIONS.to_vec();
+                exts.push(PROJECT_EXTENSION);
+                let mut dlg = rfd::FileDialog::new()
+                    .add_filter("Audio or Kerf project", &exts)
+                    .add_filter("All files", &["*"]);
+                if let Some(d) = &self.last_dir {
+                    dlg = dlg.set_directory(d);
+                }
+                if let Some(path) = dlg.pick_file() {
+                    let title = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |n| n.to_string_lossy().into_owned(),
+                    );
+                    self.compare_with(ctx, kerf_core::ops::Version::File(path), title);
+                }
+            }
             Preferences => {
                 let ffmpeg_path = match &self.prefs.ffmpeg {
                     kerf_core::decode::FfmpegSetting::Path(p) => p.display().to_string(),
@@ -1296,6 +1316,42 @@ impl KerfApp {
             Ok(()) => self.info("Preferences saved"),
             Err(e) => self.error(format!("Could not save preferences: {e}")),
         }
+    }
+
+    /// Open the Compare window for `with` and run the comparison.
+    pub fn compare_with(
+        &mut self,
+        ctx: &egui::Context,
+        with: kerf_core::ops::Version,
+        title: String,
+    ) {
+        if self.project().is_empty() {
+            self.error("Nothing to compare: the project is empty");
+            return;
+        }
+        self.dialog = Some(Dialog::Compare(Box::new(
+            crate::compare_ui::CompareState::new(with, title),
+        )));
+        self.start_compare(ctx);
+    }
+
+    /// Run the open Compare window's comparison in the background.
+    fn start_compare(&mut self, ctx: &egui::Context) {
+        if self.busy() {
+            return;
+        }
+        let Some(Dialog::Compare(state)) = &mut self.dialog else {
+            return;
+        };
+        state.running = true;
+        let request = state.request();
+        let doc = self.doc.clone();
+        let cache = self.cache.clone();
+        let revision = self.doc.revision();
+        self.job = Some(Job::spawn(ctx, "Comparing…", move |ctl| {
+            let r = crate::compare_ui::run(doc, cache, request, &mut |p| ctl.progress(p));
+            JobDone::Compared(r, revision)
+        }));
     }
 
     /// Measure the album (every track and the whole) in the background.
@@ -1756,6 +1812,21 @@ impl KerfApp {
                 }
                 Err(e) => self.error(format!("Could not open {}: {e}", path.display())),
             },
+            JobDone::Compared(r, revision) => {
+                let cancelled =
+                    matches!(&r, Err(e) if *e == kerf_core::Error::Cancelled.to_string());
+                if let Some(Dialog::Compare(state)) = &mut self.dialog {
+                    state.running = false;
+                    if !cancelled {
+                        state.result = Some((r, revision));
+                    }
+                } else if !cancelled {
+                    match r {
+                        Ok(d) => self.info(d.summary),
+                        Err(e) => self.error(format!("Comparison failed: {e}")),
+                    }
+                }
+            }
             JobDone::Analyzed(r, tracks, revision) => match r {
                 Ok(a) => {
                     let state = crate::detect_ui::DetectState::new(a, tracks, revision);
@@ -1904,6 +1975,7 @@ impl KerfApp {
                     &mut act,
                 );
                 item(ui, "Album…", Action::Album, &mut act);
+                item(ui, "Compare with File…", Action::CompareFile, &mut act);
                 item(
                     ui,
                     "Export Mix with CUE Sheet…",
@@ -2606,6 +2678,7 @@ impl KerfApp {
             Dialog::DetectSongs(_) => "Detect Song Starts",
             Dialog::Preferences(_) => "Preferences",
             Dialog::Album(_) => "Album",
+            Dialog::Compare(_) => "Compare",
             Dialog::Recover(_) => "Recover Unsaved Work",
             Dialog::Recent(_) => "Recent Projects",
             Dialog::About => "About Kerf",
@@ -2624,6 +2697,7 @@ impl KerfApp {
             .max_width(match dialog {
                 Dialog::Album(_) => 760.0,
                 Dialog::Shortcuts(_) => 680.0,
+                Dialog::Compare(_) => 600.0,
                 _ => 540.0,
             })
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -2853,6 +2927,24 @@ impl KerfApp {
                             close = true;
                         }
                     });
+                }
+                Dialog::Compare(state) => {
+                    use crate::compare_ui::Outcome;
+                    match crate::compare_ui::ui(self, ui, state) {
+                        Outcome::None => {}
+                        Outcome::Run => {
+                            if self.job.is_none() {
+                                run = Some(Box::new(|app, ctx| app.start_compare(ctx)));
+                            }
+                        }
+                        Outcome::Select(start, end) => {
+                            run = Some(Box::new(move |app, _| {
+                                app.sel.range = Some((start, end));
+                                app.cursor = start;
+                                app.ensure_visible(start);
+                            }));
+                        }
+                    }
                 }
                 Dialog::Album(state) => {
                     use crate::album_ui::Outcome;
@@ -3409,6 +3501,22 @@ impl KerfApp {
                         return;
                     }
                     None
+                }
+                // A gain change on the second second, compared with the state before it.
+                Ok("compare") => {
+                    hook.frames += 1;
+                    let sr = self.project().sample_rate as Frame;
+                    let tracks = self.project().all_track_ids();
+                    self.edit("Gain -6.0 dB", |p| {
+                        edit::apply_gain(p, &tracks, Some((sr, 2 * sr)), -6.0)
+                    });
+                    let before = self.doc.history_position() - 1;
+                    self.compare_with(
+                        ctx,
+                        kerf_core::ops::Version::History(before),
+                        "the state before the gain change".into(),
+                    );
+                    return;
                 }
                 Ok("split-cd") => {
                     self.prefs.export = ExportSettings::AUDIO_CD;

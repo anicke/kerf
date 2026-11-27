@@ -27,6 +27,7 @@ pub struct HistoryState<'a> {
     pub saved: bool,
 }
 
+#[derive(Clone)]
 pub struct Document {
     project: Project,
     revision: u64,
@@ -222,6 +223,24 @@ impl Document {
             .collect()
     }
 
+    /// The project at `index` in [`history_states`](Self::history_states).
+    pub fn state(&self, index: usize) -> Option<&Project> {
+        let now = self.undo.len();
+        match index.cmp(&now) {
+            // Undo entry i holds the state before edit i: state i.
+            std::cmp::Ordering::Less => Some(&self.undo[index].project),
+            std::cmp::Ordering::Equal => Some(&self.project),
+            // Redo entries hold the state after their edit, the next one last.
+            std::cmp::Ordering::Greater => {
+                let j = index - now - 1;
+                self.redo
+                    .len()
+                    .checked_sub(j + 1)
+                    .map(|k| &self.redo[k].project)
+            }
+        }
+    }
+
     /// Index of the current state in [`history_states`](Self::history_states).
     pub fn history_position(&self) -> usize {
         self.undo.len()
@@ -388,6 +407,28 @@ mod tests {
         d.go_to(0);
         assert_eq!(d.project(), &p0);
         assert_eq!(saved(&d), Some(2));
+    }
+
+    #[test]
+    fn every_history_state_can_be_read_in_place() {
+        let (mut d, t) = doc();
+        let mut states = vec![d.project().clone()];
+        for at in [100, 200, 300, 400] {
+            d.apply("Split", |p| edit::split_at(p, &[t], at)).unwrap();
+            states.push(d.project().clone());
+        }
+        d.undo();
+        d.undo(); // now at state 2, with two steps to redo
+        for (i, s) in states.iter().enumerate() {
+            assert_eq!(d.state(i), Some(s), "state {i}");
+        }
+        assert_eq!(d.state(5), None);
+        // Reading matches what going there gives.
+        for i in 0..5 {
+            let mut c = d.clone();
+            c.go_to(i);
+            assert_eq!(c.project(), d.state(i).unwrap());
+        }
     }
 
     #[test]

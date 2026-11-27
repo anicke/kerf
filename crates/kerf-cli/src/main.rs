@@ -15,7 +15,8 @@ use std::sync::Arc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use kerf_core::dither::Dither;
 use kerf_core::ops::{
-    Bits, ExportKind, ExportOptions, FileType, OpError, Preset, Request, Response, Session, Time,
+    Bits, Data, ExportKind, ExportOptions, FileType, OpError, Preset, Request, Response, Session,
+    Time, Version,
 };
 use kerf_core::AudioCache;
 
@@ -135,6 +136,27 @@ enum Cmd {
         db: bool,
         #[arg(long)]
         force: bool,
+    },
+    /// Null test: compare two audio files or projects sample by sample.
+    ///
+    /// Reports whether they are identical, the size of the difference and where
+    /// it is. Exit status: 0 if they null, 1 if they differ, 2 on errors.
+    Compare {
+        /// Audio file or .kerf project.
+        a: PathBuf,
+        /// Audio file or .kerf project.
+        b: PathBuf,
+        #[command(flatten)]
+        range: RangeArgs,
+        /// First shift B to line up with A (extra lead-in, encoder delay).
+        #[arg(long)]
+        align: bool,
+        /// Largest shift --align looks for, in seconds (default 1).
+        #[arg(long, value_name = "SECS", requires = "align")]
+        max_offset: Option<f64>,
+        /// Ignore differences at or below this level (dBFS), e.g. -90.
+        #[arg(long, value_name = "DB", allow_hyphen_values = true)]
+        threshold: Option<f64>,
     },
     /// Run operations given as JSON (an array, or one object per line) against an input.
     Run {
@@ -545,6 +567,28 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
             job.image = Some(out);
             vec![job]
         }
+        Cmd::Compare {
+            a,
+            b,
+            range,
+            align,
+            max_offset,
+            threshold,
+        } => vec![Job {
+            input: None,
+            steps: vec![Request::Compare {
+                a: Version::File(a),
+                b: Version::File(b),
+                start: range.start,
+                end: range.end,
+                tracks: None,
+                align,
+                max_offset_secs: max_offset,
+                threshold_db: threshold,
+            }],
+            keep_going: false,
+            image: None,
+        }],
         Cmd::Run {
             ops: file,
             input,
@@ -646,6 +690,7 @@ fn save_image(outcomes: &mut [Outcome], path: &Path) -> Result<(), String> {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let comparing = matches!(cli.cmd, Cmd::Compare { .. });
     let jobs = match plan(cli.cmd) {
         Ok(j) => j,
         Err(e) => {
@@ -667,6 +712,7 @@ fn main() -> ExitCode {
     let show_progress = !cli.json && !cli.quiet && std::io::stderr().is_terminal();
     let many = jobs.len() > 1;
     let mut failed = false;
+    let mut differ = false;
     for job in &jobs {
         let mut outcomes = run_job(job, cache.clone(), show_progress);
         if let Some(path) = &job.image {
@@ -676,16 +722,25 @@ fn main() -> ExitCode {
             }
         }
         failed |= outcomes.iter().any(|o| o.result.is_err());
+        differ |= outcomes
+            .iter()
+            .any(|o| matches!(&o.result, Ok(Response { data: Data::Compare(c), .. }) if !c.nulls));
         if cli.json {
             println!("{}", output::json(job.input.as_deref(), &outcomes));
         } else {
             output::human(job.input.as_deref(), &outcomes, many);
         }
     }
-    if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
+    exit_code(comparing, failed, differ)
+}
+
+/// Errors fail with 1, except for `compare`, which like `cmp` exits with 1
+/// when the inputs differ and 2 on errors.
+fn exit_code(comparing: bool, failed: bool, differ: bool) -> ExitCode {
+    match (comparing, failed, differ) {
+        (true, true, _) => ExitCode::from(2),
+        (_, true, _) | (true, false, true) => ExitCode::FAILURE,
+        _ => ExitCode::SUCCESS,
     }
 }
 

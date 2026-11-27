@@ -39,6 +39,7 @@ const READ_ONLY: &[&str] = &[
     "album_summary",
     "find_silences",
     "waveform",
+    "compare",
     "copy",
 ];
 
@@ -134,6 +135,7 @@ mod tests {
             "detect_songs",
             "find_silences",
             "waveform",
+            "compare",
             "split",
             "delete",
             "clear",
@@ -159,7 +161,7 @@ mod tests {
         ] {
             assert!(tools.iter().any(|t| t.name == name), "missing {name}");
         }
-        assert_eq!(tools.len(), 34, "a new operation needs a test entry");
+        assert_eq!(tools.len(), 35, "a new operation needs a test entry");
     }
 
     #[test]

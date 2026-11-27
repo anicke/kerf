@@ -13,7 +13,9 @@
 //!    only if the user hasn't edited in the meantime; otherwise start over.
 //!
 //! Undo, redo, history and save act on the real document directly
-//! ([`EditorRequest::Direct`], see [`run_direct`]).
+//! ([`EditorRequest::Direct`], see [`run_direct`]). Comparing, which may read
+//! any state in the undo history, runs on a copy of the whole document
+//! ([`EditorRequest::Document`]).
 
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
@@ -59,6 +61,9 @@ pub struct Conflict;
 pub enum EditorRequest {
     /// Reply with [`Snapshot::of`] the open document.
     Snapshot(Sender<Snapshot>),
+    /// Reply with a clone of the open document, history and all (cheap:
+    /// audio is shared). For read-only work that needs the history.
+    Document(Sender<Document>),
     /// If the document is still at `base_revision`, replace its project with
     /// `project` as one undo step labelled `label`; otherwise reply
     /// [`Conflict`].
@@ -148,6 +153,11 @@ impl Executor for EditorExecutor {
             Request::Undo | Request::Redo | Request::History | Request::Save { .. } => {
                 return self.ask(|reply| EditorRequest::Direct { request, reply })?;
             }
+            Request::Compare { .. } => {
+                let doc = self.ask(EditorRequest::Document)?;
+                let mut s = Session::from_document(doc, self.cache.clone());
+                return s.execute_with_progress(request, progress);
+            }
             _ => {}
         }
         for _ in 0..3 {
@@ -231,6 +241,9 @@ mod tests {
                     EditorRequest::Direct { request, reply } => {
                         let _ = reply.send(run_direct(&mut doc, None, request));
                     }
+                    EditorRequest::Document(r) => {
+                        let _ = r.send(doc.clone());
+                    }
                 }
             }
             doc
@@ -304,6 +317,34 @@ mod tests {
         run(&ex, serde_json::json!({"op": "paste", "at": 4})).unwrap();
         drop(ex);
         assert_eq!(ui.join().unwrap().project().length(), 5000);
+    }
+
+    #[test]
+    fn comparing_reads_the_editors_history() {
+        let (tx, rx) = channel();
+        let ui = editor(doc(), rx, false);
+        let ex = EditorExecutor::new(tx, || {}, None);
+        run(
+            &ex,
+            serde_json::json!({"op": "gain", "db": -6, "start": 1, "end": 2}),
+        )
+        .unwrap();
+        let r = run(
+            &ex,
+            serde_json::json!({"op": "compare", "b": {"history": 0}}),
+        )
+        .unwrap();
+        let kerf_core::ops::Data::Compare(c) = r.data else {
+            panic!("{r:?}")
+        };
+        assert_eq!(c.region_count, 1);
+        assert_eq!(c.first_difference.unwrap().frames, 1000);
+        drop(ex);
+        assert_eq!(
+            ui.join().unwrap().history().count(),
+            1,
+            "comparing added no step"
+        );
     }
 
     #[test]
