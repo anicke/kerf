@@ -308,7 +308,10 @@ context cost and alongside other tools.
   systems. The app doesn't check yet).
 - ~~`kerf-cli ops [NAME]`~~ (done: operations and parameters generated from the same schema as
   the MCP tools, which now share that code).
-- ~~A skill~~ (done: `skills/kerf/SKILL.md`, the step-by-step workflow and the live-album steps).
+- ~~A skill~~ (done: `skills/kerf/SKILL.md`, the step-by-step workflow and the live-album steps,
+  built into `kerf-cli`: `kerf-cli skill install` writes it for Claude Code with the command
+  that runs `kerf-cli` on that computer (on the PATH, through the AppImage, or by full path in
+  Kerf.app or the Windows install folder), so every package carries it).
 - Still open: markers addressed by name or number instead of id; the app's own check for a
   project changed on disk.
 

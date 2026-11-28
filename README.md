@@ -278,14 +278,19 @@ command is the AppImage itself and `kerf-mcp` its first argument.
 
 ## AI assistants with a shell (skill)
 
-Agents that can run commands, such as Claude Code, can also use `kerf-cli` directly through the
-skill in [`skills/kerf`](skills/kerf/SKILL.md). It costs almost nothing in the model's context
-until it's needed, and the agent can combine Kerf with other tools. Install it for Claude Code by
-copying the folder:
+Agents that can run commands, such as Claude Code, can also use `kerf-cli` directly, guided by
+a skill (the guide in [`skills/kerf`](skills/kerf/SKILL.md)). It costs almost nothing in the
+model's context until it's needed, and the agent can combine Kerf with other tools. `kerf-cli`
+carries it; install it for Claude Code with:
 
 ```sh
-cp -r skills/kerf ~/.claude/skills/        # for every project; or .claude/skills/ in one project
+kerf-cli skill install          # into ~/.claude/skills/kerf; --dir .claude/skills/kerf for one project
 ```
+
+From a package, run the `kerf-cli` inside it (`./kerf-….AppImage kerf-cli skill install`,
+`/Applications/Kerf.app/Contents/MacOS/kerf-cli skill install`, or `kerf-cli.exe skill install`
+in the install folder): the installed guide then tells the agent how to run `kerf-cli` on that
+computer, even when it isn't on the PATH. `kerf-cli skill print` shows it.
 
 The agent works on a `.kerf` project one `kerf-cli run … --save` call at a time; open the project
 in the app at any point to review its edits or undo them. Use the MCP server instead in clients

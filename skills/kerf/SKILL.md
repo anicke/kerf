@@ -9,8 +9,11 @@ Kerf is a non-destructive audio editor. `kerf-cli` runs its engine without the G
 touch the source audio: a `.kerf` project file references the audio and holds the tracks, clips,
 markers, album details and the undo history.
 
-Check it's available with `kerf-cli --version`. With the AppImage it's
-`./kerf-<version>.AppImage kerf-cli …`.
+<!-- command -->
+Check it's available with `kerf-cli --version`. If it isn't on the PATH (the AppImage, the macOS
+app, the Windows installer), run `kerf-cli skill install` from where Kerf is installed: it
+installs this guide with the command that works on that computer.
+<!-- /command -->
 
 ## Working on a project step by step
 

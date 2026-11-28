@@ -320,6 +320,38 @@ fn run_and_save_step_by_step() {
 }
 
 #[test]
+fn skill_installs_with_the_command_that_runs_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("skills").join("kerf");
+    let o = kerf(&["skill", "install", "--dir", s(&target)]);
+    assert!(o.status.success(), "{o:?}");
+    let text = std::fs::read_to_string(target.join("SKILL.md")).unwrap();
+    assert!(text.starts_with("---\nname: kerf\n"));
+    // The test binary isn't on the PATH, so the guide names it in full.
+    let exe = std::path::Path::new(env!("CARGO_BIN_EXE_kerf-cli"));
+    let name = exe.file_name().unwrap().to_str().unwrap();
+    assert!(text.contains("run it as `"), "{text}");
+    assert!(
+        text.contains(&format!("{name}`")) || text.contains(&format!("{name}\"`")),
+        "{text}"
+    );
+    assert!(!text.contains(r"\\?\"), "plain paths only: {text}");
+    // Installing again is fine; replacing a changed guide needs --force.
+    assert!(kerf(&["skill", "install", "--dir", s(&target)])
+        .status
+        .success());
+    std::fs::write(target.join("SKILL.md"), "mine").unwrap();
+    assert!(!kerf(&["skill", "install", "--dir", s(&target)])
+        .status
+        .success());
+    assert!(kerf(&["skill", "install", "--dir", s(&target), "--force"])
+        .status
+        .success());
+    let printed = kerf(&["skill", "print"]);
+    assert_eq!(String::from_utf8(printed.stdout).unwrap(), text);
+}
+
+#[test]
 fn usage_errors_exit_with_2() {
     let o = kerf(&["split", "x.wav"]);
     assert_eq!(o.status.code(), Some(2));

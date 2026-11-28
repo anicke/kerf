@@ -6,6 +6,7 @@
 //! one JSON document per input for scripts and agents.
 
 mod output;
+mod skill;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -179,6 +180,11 @@ enum Cmd {
         #[arg(long, value_name = "DB", allow_hyphen_values = true)]
         threshold: Option<f64>,
     },
+    /// The guide that teaches AI agents (e.g. Claude Code) to use kerf-cli.
+    Skill {
+        #[command(subcommand)]
+        action: SkillAction,
+    },
     /// List the operations `run` accepts, or describe one and its parameters.
     Ops {
         /// An operation, e.g. split (default: list them all).
@@ -202,6 +208,21 @@ enum Cmd {
         #[arg(long, value_name = "PROJECT", num_args = 0..=1)]
         save: Option<Option<PathBuf>>,
     },
+}
+
+#[derive(Subcommand)]
+enum SkillAction {
+    /// Install it for Claude Code (~/.claude/skills/kerf), with the command that runs this kerf-cli.
+    Install {
+        /// Folder to install into instead, e.g. .claude/skills/kerf in a project.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Replace a different existing guide.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print it.
+    Print,
 }
 
 #[derive(Args, Clone, Default)]
@@ -662,7 +683,7 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
             save: None,
         }],
         // Handled in `main` before any jobs are planned.
-        Cmd::Ops { .. } => Vec::new(),
+        Cmd::Ops { .. } | Cmd::Skill { .. } => Vec::new(),
         Cmd::Run {
             ops: file,
             input,
@@ -863,6 +884,34 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Cmd::Ops { name } = &cli.cmd {
         return print_ops(name.as_deref(), cli.json);
+    }
+    if let Cmd::Skill { action } = &cli.cmd {
+        return match action {
+            SkillAction::Print => {
+                print!("{}", skill::text(&skill::command()));
+                ExitCode::SUCCESS
+            }
+            SkillAction::Install { dir, force } => {
+                let Some(dir) = dir.clone().or_else(skill::default_dir) else {
+                    eprintln!("error: no home folder; pass --dir");
+                    return ExitCode::from(2);
+                };
+                match skill::install(&dir, *force) {
+                    Ok(file) => {
+                        println!(
+                            "Installed {} (runs kerf-cli as `{}`)",
+                            file.display(),
+                            skill::command()
+                        );
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        ExitCode::FAILURE
+                    }
+                }
+            }
+        };
     }
     let comparing = matches!(cli.cmd, Cmd::Compare { .. });
     let jobs = match plan(cli.cmd) {

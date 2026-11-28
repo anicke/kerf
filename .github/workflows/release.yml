@@ -139,8 +139,11 @@ jobs:
           APPIMAGETOOL="$tools/appimagetool" APPIMAGE_RUNTIME="$tools/runtime" \
             packaging/linux/build-appimage.sh "target/$TARGET/release" \
             "dist/kerf-$LABEL-$PLATFORM.AppImage"
-          # Smoke test: the launcher reaches the bundled tools.
-          "dist/kerf-$LABEL-$PLATFORM.AppImage" --appimage-extract-and-run kerf-cli --version
+          # Smoke test: the launcher reaches the bundled tools, and the agent guide names the
+          # AppImage as the way to run kerf-cli.
+          image="dist/kerf-$LABEL-$PLATFORM.AppImage"
+          "$image" --appimage-extract-and-run kerf-cli --version
+          "$image" --appimage-extract-and-run kerf-cli skill print | grep -F "AppImage kerf-cli"
       - name: Disk image
         if: runner.os == 'macOS'
         env:
