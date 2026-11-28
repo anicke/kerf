@@ -158,6 +158,11 @@ enum Cmd {
         #[arg(long, value_name = "DB", allow_hyphen_values = true)]
         threshold: Option<f64>,
     },
+    /// List the operations `run` accepts, or describe one and its parameters.
+    Ops {
+        /// An operation, e.g. split (default: list them all).
+        name: Option<String>,
+    },
     /// Run operations given as JSON (an array, or one object per line) against an input.
     Run {
         /// File of operations, or - for standard input.
@@ -168,6 +173,10 @@ enum Cmd {
         /// Continue after a failed operation.
         #[arg(long)]
         keep_going: bool,
+        /// Save the project afterwards, with its undo history: to the .kerf it was opened from,
+        /// or to PROJECT. Also after a failed step, so the file always holds what was done.
+        #[arg(long, value_name = "PROJECT", num_args = 0..=1)]
+        save: Option<Option<PathBuf>>,
     },
 }
 
@@ -389,6 +398,8 @@ struct Job {
     keep_going: bool,
     /// Where to save a waveform image produced by the steps.
     image: Option<PathBuf>,
+    /// Save the project after the steps (`Some(None)`: where it came from).
+    save: Option<Option<PathBuf>>,
 }
 
 impl Job {
@@ -403,6 +414,7 @@ impl Job {
             steps: all,
             keep_going: false,
             image: None,
+            save: None,
         }
     }
 }
@@ -588,11 +600,15 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
             }],
             keep_going: false,
             image: None,
+            save: None,
         }],
+        // Handled in `main` before any jobs are planned.
+        Cmd::Ops { .. } => Vec::new(),
         Cmd::Run {
             ops: file,
             input,
             keep_going,
+            save,
         } => {
             let text = if file.as_os_str() == "-" {
                 std::io::read_to_string(std::io::stdin()).map_err(|e| e.to_string())?
@@ -608,9 +624,11 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
                     steps,
                     keep_going,
                     image: None,
+                    save: None,
                 },
             };
             job.keep_going = keep_going;
+            job.save = save;
             vec![job]
         }
     })
@@ -665,6 +683,21 @@ fn run_job(job: &Job, cache: Option<Arc<AudioCache>>, show_progress: bool) -> Ve
             break;
         }
     }
+    if let Some(path) = &job.save {
+        // Whatever succeeded is kept, so the file always matches what was done
+        // (and each step can still be undone from it).
+        if path.is_some() || session.document().is_dirty() {
+            let req = Request::Save {
+                path: path.clone(),
+                force: false,
+            };
+            let result = session.execute(req.clone());
+            out.push(Outcome {
+                request: req,
+                result,
+            });
+        }
+    }
     out
 }
 
@@ -688,8 +721,69 @@ fn save_image(outcomes: &mut [Outcome], path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// `kerf-cli ops [NAME]`: the operations, generated from their schema.
+fn print_ops(name: Option<&str>, json: bool) -> ExitCode {
+    let all = kerf_core::ops::describe::operations();
+    let chosen: Vec<_> = match name {
+        Some(n) => {
+            let n = n.replace('-', "_");
+            match all.iter().find(|o| o.name == n) {
+                Some(o) => vec![o.clone()],
+                None => {
+                    eprintln!("error: no operation {n} (see `kerf-cli ops`)");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        None => all,
+    };
+    if json {
+        println!("{}", serde_json::to_string(&chosen).unwrap_or_default());
+        return ExitCode::SUCCESS;
+    }
+    if name.is_none() {
+        println!("Operations for `kerf-cli run` (one JSON object each, e.g. {{\"op\": \"split\", \"at\": \"1:23.5\"}}).");
+        println!("`kerf-cli ops NAME` describes one. Times: seconds (83.5), \"m:ss\", \"h:mm:ss\" or \"4008000smp\".\n");
+        let w = chosen.iter().map(|o| o.name.len()).max().unwrap_or(0);
+        for o in &chosen {
+            println!(
+                "  {:w$}  {}",
+                o.name,
+                o.description.as_deref().unwrap_or("")
+            );
+        }
+        return ExitCode::SUCCESS;
+    }
+    let o = &chosen[0];
+    println!("{}: {}", o.name, o.description.as_deref().unwrap_or(""));
+    if o.params.is_empty() {
+        println!("\nNo parameters: {{\"op\": \"{}\"}}", o.name);
+        return ExitCode::SUCCESS;
+    }
+    println!();
+    let mut params = o.params.clone();
+    params.sort_by_key(|p| !p.required);
+    for p in &params {
+        let mut line = format!("  {} ({}", p.name, p.kind);
+        if p.required {
+            line += ", required";
+        } else if let Some(d) = &p.default {
+            line += &format!(", default {d}");
+        }
+        line += ")";
+        println!("{line}");
+        if let Some(d) = &p.description {
+            println!("      {d}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if let Cmd::Ops { name } = &cli.cmd {
+        return print_ops(name.as_deref(), cli.json);
+    }
     let comparing = matches!(cli.cmd, Cmd::Compare { .. });
     let jobs = match plan(cli.cmd) {
         Ok(j) => j,

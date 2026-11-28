@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 
+use kerf_core::document::Document;
 use kerf_core::peaks::PeakCache;
 use kerf_core::{Project, SourceAudio};
 
@@ -20,7 +21,7 @@ pub struct Prepared {
 
 pub enum JobDone {
     Imported(Vec<Result<Prepared, String>>),
-    Loaded(PathBuf, Result<Project, String>),
+    Loaded(PathBuf, Result<Document, String>),
     Exported(Result<Vec<PathBuf>, String>),
     Recovered(crate::recovery::Orphan, Result<Project, String>),
     /// Album levels, with the audio state they were measured from.

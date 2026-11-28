@@ -2278,7 +2278,6 @@ dependencies = [
  "dirs",
  "kerf-core",
  "rmcp",
- "schemars",
  "serde",
  "serde_json",
  "tempfile",

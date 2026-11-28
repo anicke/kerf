@@ -1519,7 +1519,7 @@ impl KerfApp {
         self.last_dir = path.parent().map(Path::to_path_buf);
         let cache = self.cache.clone();
         self.job = Some(Job::spawn(ctx, "Opening project…", move |_| {
-            let r = session::load(&path, cache).map_err(|e| e.to_string());
+            let r = session::load_document(&path, cache).map_err(|e| e.to_string());
             JobDone::Loaded(path, r)
         }));
     }
@@ -1556,7 +1556,7 @@ impl KerfApp {
                 }
             }
         };
-        match session::save(self.project(), &path) {
+        match session::save_document(&self.doc, &path) {
             Ok(()) => {
                 self.remember_recent(&path);
                 self.doc.path = Some(path.clone());
@@ -1800,10 +1800,10 @@ impl KerfApp {
                 Err(e) => self.error(format!("Could not recover: {e}")),
             },
             JobDone::Loaded(path, r) => match r {
-                Ok(project) => {
+                Ok(doc) => {
                     self.remember_recent(&path);
                     self.player.stop();
-                    self.doc = Document::new(project);
+                    self.doc = doc;
                     self.doc.path = Some(path.clone());
                     self.sel = Selection::default();
                     self.cursor = 0;

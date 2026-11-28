@@ -27,6 +27,12 @@ pub struct HistoryState<'a> {
     pub saved: bool,
 }
 
+/// See [`Document::snapshots`].
+pub struct HistorySnapshots<'a> {
+    pub undo: Vec<(&'a str, &'a Project)>,
+    pub redo: Vec<(&'a str, &'a Project)>,
+}
+
 #[derive(Clone)]
 pub struct Document {
     project: Project,
@@ -272,6 +278,45 @@ impl Document {
     /// Treat the current state as unsaved (e.g. work restored after a crash).
     pub fn mark_unsaved(&mut self) {
         self.saved_revision = u64::MAX;
+    }
+
+    /// The history as `(label, state)` pairs, for saving it: `undo` oldest
+    /// first, each the state *before* its edit; `redo` with the next edit to
+    /// redo last, each the state *after* its edit.
+    pub fn snapshots(&self) -> HistorySnapshots<'_> {
+        fn pairs(v: &[Snapshot]) -> Vec<(&str, &Project)> {
+            v.iter().map(|s| (s.label.as_str(), &s.project)).collect()
+        }
+        HistorySnapshots {
+            undo: pairs(&self.undo),
+            redo: pairs(&self.redo),
+        }
+    }
+
+    /// A document whose history is `undo` and `redo` (as returned by
+    /// [`snapshots`](Self::snapshots)), with `project` current and saved.
+    pub fn with_history(
+        project: Project,
+        undo: Vec<(String, Project)>,
+        redo: Vec<(String, Project)>,
+    ) -> Self {
+        let mut doc = Self::new(project);
+        let mut rev = 0;
+        let mut snap = |(label, project): (String, Project)| {
+            rev += 1;
+            Snapshot {
+                label,
+                project,
+                revision: rev,
+                merge_key: None,
+            }
+        };
+        doc.undo = undo.into_iter().map(&mut snap).collect();
+        doc.redo = redo.into_iter().map(&mut snap).collect();
+        doc.revision = rev + 1;
+        doc.next_revision = rev + 2;
+        doc.saved_revision = doc.revision;
+        doc
     }
 
     pub fn set_undo_limit(&mut self, limit: usize) {

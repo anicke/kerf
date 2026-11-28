@@ -264,6 +264,61 @@ fn run_json_operations() {
     );
 }
 
+/// Work on a project one call at a time, as an agent with a shell would.
+#[test]
+fn run_and_save_step_by_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let show = live_show(dir.path());
+    let kerf_file = dir.path().join("show.kerf");
+    let ops = dir.path().join("ops.jsonl");
+    let run = |ops_text: &str, args: &[&str]| {
+        std::fs::write(&ops, ops_text).unwrap();
+        let mut all = vec!["run", "--ops", s(&ops)];
+        all.extend_from_slice(args);
+        json(&all)
+    };
+
+    let (ok, v) = run(
+        r#"{"op": "set_markers", "markers": [{"at": 0, "name": "One"}, {"at": 20, "name": "Two"}]}"#,
+        &[s(&show), "--save", s(&kerf_file)],
+    );
+    assert!(ok, "{v}");
+    let ids = v["steps"][1]["result"]["markers"].clone();
+
+    // A later call: one edit succeeds, the next fails. What succeeded is saved.
+    let (ok, v) = run(
+        &format!(
+            "{{\"op\": \"update_marker\", \"id\": {}, \"at\": 21}}\n{{\"op\": \"split\", \"at\": 1, \"tracks\": [42]}}",
+            ids[1]
+        ),
+        &[s(&kerf_file), "--save"],
+    );
+    assert!(!ok);
+    let steps = v["steps"].as_array().unwrap();
+    assert_eq!(steps.last().unwrap()["op"], "save", "{v}");
+    assert!(steps.last().unwrap()["result"].is_object(), "{v}");
+
+    // The next call sees both earlier calls' edits, and can undo them.
+    let (ok, v) = run(
+        r#"{"op": "history"}
+{"op": "undo"}
+{"op": "info"}"#,
+        &[s(&kerf_file), "--save"],
+    );
+    assert!(ok, "{v}");
+    assert_eq!(v["steps"][1]["result"]["undo"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        v["steps"][3]["result"]["markers"][1]["position"]["seconds"],
+        20.0
+    );
+    assert_eq!(v["steps"][4]["op"], "save");
+
+    // Nothing changed: nothing is written.
+    let (ok, v) = run(r#"{"op": "info"}"#, &[s(&kerf_file), "--save"]);
+    assert!(ok);
+    assert_eq!(v["steps"].as_array().unwrap().len(), 2, "{v}");
+}
+
 #[test]
 fn usage_errors_exit_with_2() {
     let o = kerf(&["split", "x.wav"]);

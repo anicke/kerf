@@ -860,3 +860,44 @@ fn set_markers_in_one_step() {
         1
     );
 }
+
+#[test]
+fn history_and_disk_changes_across_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let wav = tone(dir.path(), "take.wav", 10.0);
+    let kerf = dir.path().join("take.kerf");
+
+    // One call: open audio, mark, save as a project.
+    let mut a = Session::new(None);
+    ok(&mut a, json!({"op": "open", "path": wav}));
+    ok(&mut a, json!({"op": "add_marker", "at": 1, "name": "One"}));
+    ok(&mut a, json!({"op": "save", "path": kerf}));
+
+    // A later call can still undo the first one's edits.
+    let mut b = Session::new(None);
+    ok(&mut b, json!({"op": "open", "path": kerf}));
+    let h = ok(&mut b, json!({"op": "history"}));
+    assert_eq!(h["undo"], json!(["Add marker \"One\" at 0:01.000"]));
+    ok(&mut b, json!({"op": "gain", "db": -3}));
+    ok(&mut b, json!({"op": "save"}));
+
+    // Meanwhile another session (opened before b saved) can't overwrite b's work...
+    ok(&mut a, json!({"op": "add_marker", "at": 2, "name": "Two"}));
+    assert_eq!(err_code(&mut a, json!({"op": "save"})), "modified");
+    // ...unless told to.
+    ok(&mut a, json!({"op": "save", "force": true}));
+
+    let mut c = Session::new(None);
+    ok(&mut c, json!({"op": "open", "path": kerf}));
+    let h = ok(&mut c, json!({"op": "history"}));
+    assert_eq!(h["undo"].as_array().unwrap().len(), 2);
+    ok(&mut c, json!({"op": "undo"}));
+    ok(&mut c, json!({"op": "undo"}));
+    let info = ok(&mut c, json!({"op": "info"}));
+    assert!(info["markers"].as_array().unwrap().is_empty());
+    assert_eq!(info["dirty"], true);
+    // Saving your own changes repeatedly is never a conflict.
+    ok(&mut c, json!({"op": "save"}));
+    ok(&mut c, json!({"op": "redo"}));
+    ok(&mut c, json!({"op": "save"}));
+}

@@ -284,8 +284,10 @@ pub enum Request {
         #[serde(default)]
         at: Option<Time>,
     },
-    /// Save the project (to `path`, or where it was opened from). Existing
-    /// files other than the project's own are only replaced with `force`.
+    /// Save the project with its undo history (to `path`, or where it was
+    /// opened from). Existing files other than the project's own, or the
+    /// project's own if something else changed it since it was opened, are
+    /// only replaced with `force`.
     Save {
         #[serde(default)]
         path: Option<PathBuf>,
@@ -934,6 +936,9 @@ pub enum ErrorCode {
     UnsavedChanges,
     Cancelled,
     Unsupported,
+    /// The project file changed on disk since it was opened or saved
+    /// (pass `force` to replace it anyway).
+    Modified,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, thiserror::Error)]

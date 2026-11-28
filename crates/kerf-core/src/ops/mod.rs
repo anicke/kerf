@@ -13,6 +13,8 @@
 //! println!("{}", s.execute_json(r#"{"op": "detect_songs", "songs": 14, "apply": true}"#));
 //! ```
 
+#[cfg(feature = "schema")]
+pub mod describe;
 mod types;
 
 use std::path::{Path, PathBuf};
@@ -123,6 +125,21 @@ pub struct Session {
     source_name: Option<String>,
     /// Prepended to every undo label (e.g. "AI: ").
     label_prefix: String,
+    /// The project file as it was when opened or last saved, to notice
+    /// changes made by something else meanwhile.
+    file_stamp: Option<FileStamp>,
+}
+
+/// A hash of a file's contents (project files are small). Modification times
+/// are too coarse on some file systems to tell two quick saves apart.
+type FileStamp = u64;
+
+fn file_stamp(path: &Path) -> Option<FileStamp> {
+    use std::hash::{Hash, Hasher};
+    let bytes = std::fs::read(path).ok()?;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    Some(h.finish())
 }
 
 impl Session {
@@ -135,6 +152,7 @@ impl Session {
             clipboard: None,
             source_name: None,
             label_prefix: String::new(),
+            file_stamp: None,
         };
         s.reset(Project::default(), None);
         s
@@ -149,6 +167,7 @@ impl Session {
             clipboard: None,
             source_name: None,
             label_prefix: String::new(),
+            file_stamp: None,
         }
     }
 
@@ -184,6 +203,7 @@ impl Session {
         self.doc.path = path;
         self.clipboard = None;
         self.source_name = None;
+        self.file_stamp = None;
     }
 
     /// Run a request given as JSON; returns `{"ok": true, "result": …}` or
@@ -768,8 +788,12 @@ impl Session {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case(session::PROJECT_EXTENSION));
         if is_project {
-            let project = session::load(path, self.cache.clone())?;
-            self.reset(project, Some(path.to_path_buf()));
+            let mut doc = session::load_document(path, self.cache.clone())?;
+            doc.path = Some(path.to_path_buf());
+            self.doc = doc;
+            self.clipboard = None;
+            self.source_name = None;
+            self.file_stamp = file_stamp(path);
         } else {
             let mut project = Project {
                 cache: self.cache.clone(),
@@ -811,9 +835,20 @@ impl Session {
                 format!("{} exists (use force to replace it)", path.display()),
             ));
         }
-        session::save(self.project(), &path)?;
+        if own && !force && self.file_stamp.is_some() && file_stamp(&path) != self.file_stamp {
+            return Err(OpError::new(
+                ErrorCode::Modified,
+                format!(
+                    "{} changed on disk since it was opened; open it again to see the \
+                     changes (unsaved work here is lost), or use force to replace it",
+                    path.display()
+                ),
+            ));
+        }
+        session::save_document(&self.doc, &path)?;
         self.doc.path = Some(path.clone());
         self.doc.mark_saved();
+        self.file_stamp = file_stamp(&path);
         Ok(done(format!("Saved {}", path.display())))
     }
 

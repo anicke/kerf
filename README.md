@@ -24,7 +24,9 @@ done, what's next, and known limitations.
   or cutting and pasting back, renders bit-identical audio. Fades are anchored to the source, so
   splitting inside a fade is inaudible.
 - **Unlimited undo/redo.** Every edit is one undoable step, including fader drags (merged into one
-  step). Snapshots share audio, so history costs almost no memory.
+  step). Snapshots share audio, so history costs almost no memory. Projects keep their last 100
+  steps when saved, so you can still undo after reopening (also edits made by `kerf-cli` or an
+  assistant).
 - **Normalization.** Peak (dBFS), RMS, or integrated loudness (ITU-R BS.1770 / EBU R128 LUFS,
   checked against EBU Tech 3341). Optional peak ceiling. Per track or linked (keeps the balance).
   Works on a selection or whole tracks.
@@ -201,6 +203,8 @@ kerf-cli export show.kerf --kind tracks --preset flac --out music/ \
 kerf-cli waveform show.kerf -o show.png --db        # a picture: peaks, RMS, clipping, markers
 kerf-cli compare show.kerf album.wav --threshold -90 # null test: does the export match?
 kerf-cli run --ops edits.jsonl show.wav             # any operation, as JSON
+kerf-cli run --ops edits.jsonl show.kerf --save     # ...on a project, saved with its history
+kerf-cli ops                                        # the operations; `kerf-cli ops split` for one
 ```
 
 Times are seconds (`83.5`), `m:ss` (`1:23.5`), `h:mm:ss`, or exact samples (`4008000smp`).
@@ -209,7 +213,14 @@ crop, copy/cut/paste, gain, normalize, fades, markers (one at a time, or all at 
 `set_markers`), album details and loudness, export,
 compare) as a
 JSON array or one object per line, e.g. `{"op": "fade_out", "start": "41:10", "end": "41:18"}`.
-These are the operations of `kerf_core::ops`, which the MCP server exposes too.
+These are the operations of `kerf_core::ops`, which the MCP server exposes too; `kerf-cli ops`
+lists them and `kerf-cli ops NAME` shows one's parameters.
+
+`run --save` saves the project afterwards with its undo history (`--save show.kerf` to create one
+from an audio file), including after a failed step, so the file always holds what was done. That
+makes step-by-step work through a `.kerf` file practical: each call opens it, edits and saves, and
+any later call (or the app) can undo. A save is refused if something else changed the project
+since it was opened.
 
 ## AI assistants (MCP)
 
@@ -257,6 +268,21 @@ command is the AppImage itself and `kerf-mcp` its first argument.
   project; left out, the assistant asks, or in the app uses the open project), `songs`,
   `setlist` (one title per line), `target_lufs`, `output` and `format` (`cd`, `flac` or `wav`).
   Long operations report progress and can be cancelled.
+
+## AI assistants with a shell (skill)
+
+Agents that can run commands, such as Claude Code, can also use `kerf-cli` directly through the
+skill in [`skills/kerf`](skills/kerf/SKILL.md). It costs almost nothing in the model's context
+until it's needed, and the agent can combine Kerf with other tools. Install it for Claude Code by
+copying the folder:
+
+```sh
+cp -r skills/kerf ~/.claude/skills/        # for every project; or .claude/skills/ in one project
+```
+
+The agent works on a `.kerf` project one `kerf-cli run … --save` call at a time; open the project
+in the app at any point to review its edits or undo them. Use the MCP server instead in clients
+without a shell, or to have the assistant edit the project open in the app while you watch.
 
 ## Layout
 

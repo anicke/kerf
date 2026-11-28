@@ -288,6 +288,24 @@ and matching lyrics and speech by hand.
 - ~~**Markers in one call**~~ (done: `set_markers` takes a list of markers (position, name,
   optional artist and ISRC) and replaces or adds them as one undo step; CLI `run` too).
 
+**Agents with a shell (CLI and skill):** done. MCP loads every tool's schema into the model's
+context; an agent that can run commands can use `kerf-cli` with a skill instead, at almost no
+context cost and alongside other tools.
+
+- ~~Undo history saved in projects~~ (done: the last 100 steps and anything redoable; audio only
+  the history uses is saved too; if that audio is missing the project opens without its history.
+  The app, `kerf-cli` and the MCP server all keep it).
+- ~~`kerf-cli run --save [PROJECT]`~~ (done: saves after the steps, also after a failure, so the
+  file always matches what was done).
+- ~~Refuse to overwrite a project changed since it was opened~~ (done: `save` fails with
+  `modified` unless `force`; compared by content, since file times are coarse on some file
+  systems. The app doesn't check yet).
+- ~~`kerf-cli ops [NAME]`~~ (done: operations and parameters generated from the same schema as
+  the MCP tools, which now share that code).
+- ~~A skill~~ (done: `skills/kerf/SKILL.md`, the step-by-step workflow and the live-album steps).
+- Still open: markers addressed by name or number instead of id; the app's own check for a
+  project changed on disk.
+
 Size: spectrogram about 1 day; speech detection 2–3 days; transcription and lyric matching 3–5
 days, pending open decision 5.
 

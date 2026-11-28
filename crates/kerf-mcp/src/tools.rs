@@ -6,30 +6,9 @@
 
 use std::sync::Arc;
 
-use kerf_core::ops::Request;
+use kerf_core::ops::describe;
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{json, Map, Value};
-
-/// Descriptions for parameters that many operations share.
-const COMMON: &[(&str, &str)] = &[
-    (
-        "tracks",
-        "Track ids to act on (from `info`); all tracks when omitted.",
-    ),
-    ("start", "Range start (default: the beginning)."),
-    ("end", "Range end (default: the end of the project)."),
-    ("at", "Timeline position."),
-    (
-        "path",
-        "File or folder path. Relative paths are resolved against the first allowed folder.",
-    ),
-    ("force", "Replace existing files."),
-    (
-        "dry_run",
-        "Report what would be written without writing anything.",
-    ),
-    ("discard", "Drop unsaved changes to the current project."),
-];
 
 /// Operations that never change the project or any file.
 const READ_ONLY: &[&str] = &[
@@ -91,40 +70,25 @@ fn used_defs(schema: &Value, defs: &Map<String, Value>) -> Map<String, Value> {
 
 /// One tool per operation.
 pub fn tools() -> Vec<Tool> {
-    let schema = schemars::schema_for!(Request);
-    let root = serde_json::to_value(&schema).expect("schema serializes");
-    let defs = root.get("$defs").cloned();
-    let variants = root
-        .get("oneOf")
-        .and_then(Value::as_array)
-        .expect("Request is an internally tagged enum");
-
-    variants
-        .iter()
-        .filter_map(|v| {
-            let mut v = v.as_object()?.clone();
-            let props = v.get_mut("properties")?.as_object_mut()?;
-            let op_schema = props.remove("op")?;
-            let name = op_schema
-                .get("const")
-                .or_else(|| op_schema.get("enum").and_then(|e| e.get(0)))?
-                .as_str()?
-                .to_string();
-            for (key, text) in COMMON {
-                if let Some(Value::Object(p)) = props.get_mut(*key) {
-                    p.entry("description").or_insert_with(|| json!(text));
-                }
-            }
-            if let Some(Value::Array(req)) = v.get_mut("required") {
-                req.retain(|r| r != "op");
-                if req.is_empty() {
-                    v.remove("required");
-                }
-            }
+    let describe::RequestSchemas { ops, defs } = describe::request_schemas();
+    ops.into_iter()
+        .map(|(name, mut v)| {
             let description = v
                 .remove("description")
                 .and_then(|d| d.as_str().map(String::from))
                 .unwrap_or_else(|| title(&name));
+            // The server resolves paths inside its allowed folders.
+            if let Some(Value::Object(p)) = v
+                .get_mut("properties")
+                .and_then(|p| p.get_mut("path"))
+            {
+                if p.get("description").and_then(Value::as_str) == Some("File or folder path.") {
+                    p.insert(
+                        "description".into(),
+                        json!("File or folder path. Relative paths are resolved against the first allowed folder."),
+                    );
+                }
+            }
             let mut input: JsonObject = Map::new();
             input.insert("type".into(), json!("object"));
             for (k, val) in v {
@@ -132,11 +96,9 @@ pub fn tools() -> Vec<Tool> {
                     input.insert(k, val);
                 }
             }
-            if let Some(d) = defs.as_ref().and_then(Value::as_object) {
-                let used = used_defs(&Value::Object(input.clone()), d);
-                if !used.is_empty() {
-                    input.insert("$defs".into(), Value::Object(used));
-                }
+            let used = used_defs(&Value::Object(input.clone()), &defs);
+            if !used.is_empty() {
+                input.insert("$defs".into(), Value::Object(used));
             }
 
             let read_only = READ_ONLY.contains(&name.as_str());
@@ -144,7 +106,7 @@ pub fn tools() -> Vec<Tool> {
                 .read_only(read_only)
                 .destructive(WRITES_FILES.contains(&name.as_str()))
                 .open_world(false);
-            Some(Tool::new(name, description, Arc::new(input)).annotate(annotations))
+            Tool::new(name, description, Arc::new(input)).annotate(annotations)
         })
         .collect()
 }
