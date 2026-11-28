@@ -480,6 +480,8 @@ fn hop_of(a: &Analysis, f: Frame) -> usize {
 
 /// An intro or outro must be mostly talk and within this much of the edge.
 const EDGE_TALK_SECS: f64 = 300.0;
+/// ...and at least this long (a scrap of the next programme isn't an outro).
+const MIN_EDGE_SECS: f64 = 5.0;
 
 /// Song boundaries (sorted by position), not including the range start.
 pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
@@ -533,7 +535,6 @@ pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
         .collect();
 
     let min_strength = 0.9 - 0.4 * s.sensitivity.clamp(0.0, 1.0);
-    let strong = |b: &Boundary| s.expected_songs.is_some() || b.strength >= min_strength;
     let edge = hops(EDGE_TALK_SECS);
 
     // A presenter's introduction: mostly talk from the range start up to a
@@ -542,7 +543,9 @@ pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
         .iter()
         .position(|(b, _)| {
             let to = hop_of(a, b.gap_end);
-            to <= edge && strong(b) && talk_share(a, 0, to) >= 0.5
+            // Mostly talk from the start is the evidence; talk alone over a
+            // music bed doesn't make a strong gap.
+            to <= edge && to >= hops(MIN_EDGE_SECS) && talk_share(a, 0, to) >= 0.5
         })
         .map(|i| {
             let (mut b, onset) = candidates.remove(i);
@@ -555,7 +558,7 @@ pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
         .iter()
         .rposition(|(b, _)| {
             let from = hop_of(a, b.gap_start);
-            n - from <= edge && strong(b) && talk_share(a, from, n) >= 0.5
+            n - from <= edge && n - from >= hops(MIN_EDGE_SECS) && talk_share(a, from, n) >= 0.5
         })
         .map(|i| {
             let (mut b, _) = candidates.remove(i);
@@ -981,6 +984,34 @@ mod tests {
         let two = find_boundaries(&a, &s);
         assert_eq!(two.len(), 2, "{two:?}");
         assert_eq!(two[0].kind, BoundaryKind::AfterIntro);
+    }
+
+    #[test]
+    fn presenter_over_a_music_bed_is_an_intro() {
+        // No crowd noise: the talk alone has to mark the intro.
+        let mut a = Vec::new();
+        let mut bed = Vec::new();
+        song(&mut bed, 30.0, 110.0, 0.06);
+        for (t, b) in crate::speech::tests::talk(30.0, 0.5, 5)
+            .into_iter()
+            .zip(bed)
+        {
+            a.push(t + b);
+        }
+        song(&mut a, 90.0, 220.0, 0.5);
+        let mut rng = Noise(9);
+        applause(&mut a, 6.0, 0.1, &mut rng);
+        song(&mut a, 90.0, 196.0, 0.5);
+        let mut p = Project::new(SR, 1);
+        p.add_source_as_track("show", None, AudioBuffer::new(SR, vec![a]), 0);
+        let found = find_boundaries(&analyse(&p), &DetectSettings::default());
+        assert_eq!(
+            found.first().map(|b| b.kind),
+            Some(BoundaryKind::AfterIntro),
+            "{found:?}"
+        );
+        let at = found[0].position as f64 / SR as f64;
+        assert!((29.0..=31.5).contains(&at), "{found:?}");
     }
 
     #[test]
