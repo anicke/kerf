@@ -173,6 +173,8 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
+          # The release keeps its own copy; these only need to outlast the publish approval.
+          retention-days: 3
 
   publish:
     needs: build
