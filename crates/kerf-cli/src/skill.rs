@@ -51,8 +51,10 @@ fn quote(p: &Path) -> String {
 
 /// The guide, telling the agent to run `kerf-cli` as `command`.
 pub fn text(command: &str) -> String {
-    let (Some(a), Some(b)) = (SKILL.find(BEGIN), SKILL.find(END)) else {
-        return SKILL.to_string();
+    // A Windows checkout may have given the file CRLF line endings.
+    let skill = SKILL.replace("\r\n", "\n");
+    let (Some(a), Some(b)) = (skill.find(BEGIN), skill.find(END)) else {
+        return skill;
     };
     let how = if command == "kerf-cli" {
         "`kerf-cli` is on the PATH here: check it with `kerf-cli --version`.\n".to_string()
@@ -62,7 +64,7 @@ pub fn text(command: &str) -> String {
              that instead (check it with `{command} --version`).\n"
         )
     };
-    format!("{}{how}{}", &SKILL[..a], &SKILL[b + END.len()..])
+    format!("{}{how}{}", &skill[..a], &skill[b + END.len()..])
 }
 
 /// Claude Code's folder for personal skills.
