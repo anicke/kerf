@@ -195,6 +195,12 @@ fn print_response(r: &Response) {
             }
             println!("  {}", w.png_base64);
         }
+        Data::Spectrogram(sp) => {
+            for m in &sp.markers {
+                println!("  x = {:>4}  {:>12}  {}", m.x, m.position.time, m.name);
+            }
+            println!("  {}", sp.png_base64);
+        }
         Data::Compare(c) => {
             let show = |v: Option<f64>| v.map_or("–".into(), |v| format!("{v:.1}"));
             println!("  a: {} ({})", c.a, c.length_a.time);

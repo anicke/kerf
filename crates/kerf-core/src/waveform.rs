@@ -34,7 +34,7 @@ pub struct Image {
     pub grid_secs: f64,
 }
 
-type Rgb = [u8; 3];
+pub(crate) type Rgb = [u8; 3];
 const BACKGROUND: Rgb = [22, 24, 28];
 const GRID: Rgb = [44, 47, 54];
 const CENTER: Rgb = [58, 60, 68];
@@ -42,7 +42,7 @@ const SEPARATOR: Rgb = [80, 82, 90];
 const PEAK: Rgb = [74, 144, 226];
 const RMS: Rgb = [150, 196, 245];
 const CLIP: Rgb = [235, 72, 64];
-const MARKER: Rgb = [242, 200, 60];
+pub(crate) const MARKER: Rgb = [242, 200, 60];
 
 #[derive(Clone, Copy)]
 struct Column {
@@ -66,7 +66,7 @@ impl Default for Column {
 }
 
 /// A grid step giving lines at least ~80 px apart.
-fn grid_step(secs_per_px: f64) -> f64 {
+pub(crate) fn grid_step(secs_per_px: f64) -> f64 {
     const STEPS: [f64; 22] = [
         0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0,
         60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0,
@@ -91,14 +91,14 @@ fn amp(v: f32, db: bool) -> f32 {
     }
 }
 
-struct Canvas {
+pub(crate) struct Canvas {
     w: usize,
     h: usize,
     px: Vec<u8>,
 }
 
 impl Canvas {
-    fn new(w: usize, h: usize) -> Self {
+    pub(crate) fn new(w: usize, h: usize) -> Self {
         let mut px = Vec::with_capacity(w * h * 3);
         for _ in 0..w * h {
             px.extend_from_slice(&BACKGROUND);
@@ -106,14 +106,14 @@ impl Canvas {
         Self { w, h, px }
     }
 
-    fn set(&mut self, x: usize, y: usize, c: Rgb) {
+    pub(crate) fn set(&mut self, x: usize, y: usize, c: Rgb) {
         if x < self.w && y < self.h {
             let i = (y * self.w + x) * 3;
             self.px[i..i + 3].copy_from_slice(&c);
         }
     }
 
-    fn vline(&mut self, x: usize, y0: usize, y1: usize, c: Rgb) {
+    pub(crate) fn vline(&mut self, x: usize, y0: usize, y1: usize, c: Rgb) {
         for y in y0..=y1.min(self.h.saturating_sub(1)) {
             self.set(x, y, c);
         }
@@ -125,7 +125,7 @@ impl Canvas {
         }
     }
 
-    fn png(&self) -> Result<Vec<u8>> {
+    pub(crate) fn png(&self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         let mut enc = png::Encoder::new(&mut out, self.w as u32, self.h as u32);
         enc.set_color(png::ColorType::Rgb);

@@ -137,6 +137,27 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Draw a spectrogram as a PNG: frequency over time, telling speech from music.
+    Spectrogram {
+        input: PathBuf,
+        /// Image file to write.
+        #[arg(short, long)]
+        out: PathBuf,
+        #[command(flatten)]
+        range: RangeArgs,
+        #[arg(long, default_value_t = 1200)]
+        width: u32,
+        #[arg(long, default_value_t = 300)]
+        height: u32,
+        /// Highest frequency shown, in Hz.
+        #[arg(long, default_value_t = 16000.0)]
+        max_hz: f64,
+        /// Linear frequency scale instead of logarithmic.
+        #[arg(long)]
+        linear: bool,
+        #[arg(long)]
+        force: bool,
+    },
     /// Null test: compare two audio files or projects sample by sample.
     ///
     /// Reports whether they are identical, the size of the difference and where
@@ -173,6 +194,9 @@ enum Cmd {
         /// Continue after a failed operation.
         #[arg(long)]
         keep_going: bool,
+        /// Write waveform and spectrogram images into this folder (as <step>-<op>.png).
+        #[arg(long, value_name = "DIR")]
+        images: Option<PathBuf>,
         /// Save the project afterwards, with its undo history: to the .kerf it was opened from,
         /// or to PROJECT. Also after a failed step, so the file always holds what was done.
         #[arg(long, value_name = "PROJECT", num_args = 0..=1)]
@@ -398,6 +422,8 @@ struct Job {
     keep_going: bool,
     /// Where to save a waveform image produced by the steps.
     image: Option<PathBuf>,
+    /// Folder for every image the steps produce.
+    image_dir: Option<PathBuf>,
     /// Save the project after the steps (`Some(None)`: where it came from).
     save: Option<Option<PathBuf>>,
 }
@@ -414,6 +440,7 @@ impl Job {
             steps: all,
             keep_going: false,
             image: None,
+            image_dir: None,
             save: None,
         }
     }
@@ -579,6 +606,37 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
             job.image = Some(out);
             vec![job]
         }
+        Cmd::Spectrogram {
+            input,
+            out,
+            range,
+            width,
+            height,
+            max_hz,
+            linear,
+            force,
+        } => {
+            if out.exists() && !force {
+                return Err(format!(
+                    "{} exists (use --force to replace it)",
+                    out.display()
+                ));
+            }
+            let mut job = Job::new(
+                &input,
+                vec![Request::Spectrogram {
+                    start: range.start,
+                    end: range.end,
+                    tracks: None,
+                    width: Some(width),
+                    height: Some(height),
+                    max_hz: Some(max_hz),
+                    linear,
+                }],
+            );
+            job.image = Some(out);
+            vec![job]
+        }
         Cmd::Compare {
             a,
             b,
@@ -600,6 +658,7 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
             }],
             keep_going: false,
             image: None,
+            image_dir: None,
             save: None,
         }],
         // Handled in `main` before any jobs are planned.
@@ -608,6 +667,7 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
             ops: file,
             input,
             keep_going,
+            images,
             save,
         } => {
             let text = if file.as_os_str() == "-" {
@@ -624,11 +684,13 @@ fn plan(cmd: Cmd) -> Result<Vec<Job>, String> {
                     steps,
                     keep_going,
                     image: None,
+                    image_dir: None,
                     save: None,
                 },
             };
             job.keep_going = keep_going;
             job.save = save;
+            job.image_dir = images;
             vec![job]
         }
     })
@@ -701,22 +763,40 @@ fn run_job(job: &Job, cache: Option<Arc<AudioCache>>, show_progress: bool) -> Ve
     out
 }
 
-/// Write the waveform from the outcomes to `path`, keeping the base64 out of
-/// the printed result.
-fn save_image(outcomes: &mut [Outcome], path: &Path) -> Result<(), String> {
+/// Write each waveform or spectrogram image from the outcomes to a file,
+/// keeping the base64 out of the printed result: to `path` when given (the
+/// waveform and spectrogram commands), else into `dir` as `<step>-<op>.png`,
+/// else nowhere (the result says how to get it).
+fn save_images(
+    outcomes: &mut [Outcome],
+    path: Option<&Path>,
+    dir: Option<&Path>,
+) -> Result<(), String> {
     use base64::Engine;
-    for o in outcomes {
-        if let Ok(Response {
-            data: kerf_core::ops::Data::Waveform(w),
-            ..
-        }) = &mut o.result
-        {
-            let png = base64::engine::general_purpose::STANDARD
-                .decode(&w.png_base64)
-                .map_err(|e| e.to_string())?;
-            std::fs::write(path, png).map_err(|e| format!("{}: {e}", path.display()))?;
-            w.png_base64 = format!("(written to {})", path.display());
+    for (i, o) in outcomes.iter_mut().enumerate() {
+        let name = output::op_name(&o.request);
+        let Ok(r) = &mut o.result else { continue };
+        let Some(b64) = r.data.png_base64_mut() else {
+            continue;
+        };
+        let file = match (path, dir) {
+            (Some(p), _) => p.to_path_buf(),
+            (None, Some(d)) => d.join(format!("{}-{name}.png", i + 1)),
+            (None, None) => {
+                *b64 = format!(
+                    "(image not saved: use `kerf-cli run --images DIR` or the {name} command)"
+                );
+                continue;
+            }
+        };
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(&*b64)
+            .map_err(|e| e.to_string())?;
+        if let Some(d) = file.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
         }
+        std::fs::write(&file, png).map_err(|e| format!("{}: {e}", file.display()))?;
+        *b64 = format!("(written to {})", file.display());
     }
     Ok(())
 }
@@ -809,11 +889,13 @@ fn main() -> ExitCode {
     let mut differ = false;
     for job in &jobs {
         let mut outcomes = run_job(job, cache.clone(), show_progress);
-        if let Some(path) = &job.image {
-            if let Err(e) = save_image(&mut outcomes, path) {
-                eprintln!("error: {e}");
-                failed = true;
-            }
+        if let Err(e) = save_images(
+            &mut outcomes,
+            job.image.as_deref(),
+            job.image_dir.as_deref(),
+        ) {
+            eprintln!("error: {e}");
+            failed = true;
         }
         failed |= outcomes.iter().any(|o| o.result.is_err());
         differ |= outcomes

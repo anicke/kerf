@@ -356,6 +356,25 @@ impl Session {
                 };
                 self.waveform(a, b, &t, &o, progress)
             }
+            R::Spectrogram {
+                start,
+                end,
+                tracks,
+                width,
+                height,
+                max_hz,
+                linear,
+            } => {
+                let (a, b) = self.range(start.as_ref(), end.as_ref())?;
+                let t = self.tracks(tracks.as_deref())?;
+                let o = crate::spectrogram::Options {
+                    width: width.unwrap_or(1200).clamp(200, 4000),
+                    height: height.unwrap_or(300).clamp(100, 2000),
+                    max_hz: max_hz.unwrap_or(16_000.0),
+                    log_freq: !linear,
+                };
+                self.spectrogram(a, b, &t, &o, progress)
+            }
 
             // --- Edit -------------------------------------------------------
             R::Split { at, tracks } => {
@@ -1277,6 +1296,69 @@ impl Session {
                 seconds_per_pixel: secs_per_px,
                 grid_secs: img.grid_secs,
                 db_scale: o.db_scale,
+                markers,
+            }),
+        })
+    }
+
+    fn spectrogram(
+        &self,
+        a: Frame,
+        b: Frame,
+        tracks: &[TrackId],
+        o: &crate::spectrogram::Options,
+        progress: Progress,
+    ) -> OpResult {
+        use base64::Engine;
+        let p = self.project();
+        let sr = p.sample_rate;
+        let img = crate::spectrogram::render_png(p, tracks, a, b, o, progress)?;
+        let markers = p
+            .markers
+            .iter()
+            .filter(|m| m.position >= a && m.position < b)
+            .map(|m| WaveformMarker {
+                x: crate::waveform::column_of(m.position, a, b, o.width),
+                name: m.name.clone(),
+                position: TimePos::new(m.position, sr),
+            })
+            .collect();
+        let secs_per_px = (b - a) as f64 / sr as f64 / o.width as f64;
+        let lines: Vec<FreqLine> = img
+            .freq_lines
+            .iter()
+            .map(|&(hz, y)| FreqLine { hz, y })
+            .collect();
+        Ok(Response {
+            summary: format!(
+                "Spectrogram of {}: {}×{} px, {:.4} s per pixel, grid every {} s, {}–{} Hz ({}){}",
+                self.fmt_span(a, b),
+                o.width,
+                o.height,
+                secs_per_px,
+                img.grid_secs,
+                img.min_hz,
+                img.max_hz,
+                if o.log_freq { "log" } else { "linear" },
+                lines
+                    .iter()
+                    .map(|l| format!(", {} Hz at y = {}", l.hz, l.y))
+                    .collect::<String>()
+            ),
+            data: Data::Spectrogram(SpectrogramInfo {
+                png_base64: base64::engine::general_purpose::STANDARD.encode(&img.png),
+                width: o.width,
+                height: o.height,
+                start: TimePos::new(a, sr),
+                end: TimePos::new(b, sr),
+                seconds_per_pixel: secs_per_px,
+                grid_secs: img.grid_secs,
+                min_hz: img.min_hz,
+                max_hz: img.max_hz,
+                log_freq: o.log_freq,
+                top_db: (img.top_db * 10.0).round() / 10.0,
+                range_db: crate::spectrogram::RANGE_DB,
+                freq_lines: lines,
                 markers,
             }),
         })

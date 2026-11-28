@@ -470,6 +470,39 @@ fn waveform_image_with_markers() {
 }
 
 #[test]
+fn spectrogram_image() {
+    use base64::Engine;
+    let dir = tempfile::tempdir().unwrap();
+    let a = tone(dir.path(), "a.wav", 4.0);
+    let mut s = Session::new(None);
+    ok(&mut s, json!({"op": "open", "path": a}));
+    ok(&mut s, json!({"op": "add_marker", "at": 1, "name": "One"}));
+    let r = ok(&mut s, json!({"op": "spectrogram", "width": 400}));
+    assert_eq!(r["type"], "spectrogram");
+    assert_eq!(r["markers"][0]["x"], 100);
+    assert_eq!(r["log_freq"], true);
+    assert_eq!(r["max_hz"], 16_000.0);
+    assert_eq!(r["freq_lines"].as_array().unwrap().len(), 3);
+    // A -12 dBFS sine.
+    assert!(
+        (r["top_db"].as_f64().unwrap() + 12.0).abs() < 1.5,
+        "{}",
+        r["top_db"]
+    );
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(r["png_base64"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+    // The top is capped at half the sample rate; a linear scale starts at 0 Hz.
+    let r = ok(
+        &mut s,
+        json!({"op": "spectrogram", "max_hz": 96000, "linear": true}),
+    );
+    assert_eq!(r["max_hz"], SR as f64 / 2.0);
+    assert_eq!(r["min_hz"], 0.0);
+}
+
+#[test]
 fn sessions_wrap_existing_documents_with_labelled_steps() {
     let dir = tempfile::tempdir().unwrap();
     let a = tone(dir.path(), "a.wav", 2.0);

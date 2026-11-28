@@ -201,9 +201,11 @@ kerf-cli export show.kerf --kind tracks --preset flac --out flac/ --dry-run
 kerf-cli export show.kerf --kind tracks --preset flac --out music/ \
     --names "{artist} - {album} ({year})/{nn} {title}"   # file names, with folders
 kerf-cli waveform show.kerf -o show.png --db        # a picture: peaks, RMS, clipping, markers
+kerf-cli spectrogram show.kerf -o s.png --start 14:40 --end 16:10  # speech vs music, by frequency
 kerf-cli compare show.kerf album.wav --threshold -90 # null test: does the export match?
 kerf-cli run --ops edits.jsonl show.wav             # any operation, as JSON
 kerf-cli run --ops edits.jsonl show.kerf --save     # ...on a project, saved with its history
+kerf-cli run --ops look.jsonl show.kerf --images img/  # waveform/spectrogram steps as PNG files
 kerf-cli ops                                        # the operations; `kerf-cli ops split` for one
 ```
 
@@ -248,8 +250,9 @@ command is the AppImage itself and `kerf-mcp` its first argument.
 - **Tools:** every engine operation (the same as `kerf-cli run`), generated from the operation
   types so they always match. Each returns a one-line summary plus details as JSON.
 - **Seeing audio:** an assistant can't listen, so `waveform` returns a picture of any range
-  (zoom in by choosing start and end), and `analyze`, `find_silences` and `detect_songs` report
-  levels and positions. `compare` is a null test: against an earlier `history` state it shows
+  (zoom in by choosing start and end), `spectrogram` shows frequency over time (where speech,
+  crowd noise and music look different, unlike in a waveform), and `analyze`, `find_silences`
+  and `detect_songs` report levels and positions. `compare` is a null test: against an earlier `history` state it shows
   exactly what an edit changed, and against an exported file that the export matches.
 - **Safe by design:** every edit is one undoable step; `open` and `new` won't drop unsaved changes
   unless asked; exports never overwrite without `force`, and dry runs show exactly what would be

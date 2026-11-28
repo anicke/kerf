@@ -14,7 +14,7 @@ pub mod tools;
 
 use std::sync::{Arc, Mutex};
 
-use kerf_core::ops::{self, Data, OpError, Request, Response, Session};
+use kerf_core::ops::{self, OpError, Request, Response, Session};
 use kerf_core::AudioCache;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams,
@@ -198,8 +198,8 @@ pub fn tool_result(result: Result<Response, OpError>) -> CallToolResult {
         Ok(r) => {
             let mut content = Vec::new();
             let mut details = data_json(&r);
-            if let Data::Waveform(w) = &r.data {
-                content.push(ContentBlock::image(w.png_base64.clone(), "image/png"));
+            if let Some(png) = r.data.png_base64() {
+                content.push(ContentBlock::image(png.to_string(), "image/png"));
                 if let Some(o) = details.as_object_mut() {
                     o.remove("png_base64");
                 }

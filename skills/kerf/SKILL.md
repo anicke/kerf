@@ -47,6 +47,10 @@ EOF
 - `analyze`: peak, true peak, RMS, LUFS, loudness range and clipping of a range.
 - `waveform` draws a PNG of any range; read the image. Zoom in by choosing `start`/`end`; `db_scale`
   shows quiet passages. From the shell: `kerf-cli waveform show.kerf -o w.png --start 3:30 --end 4:30`.
+- `spectrogram` draws frequency over time: tells speech from music where a waveform can't. Speech
+  is stacked, wavy harmonics that come and go with the syllables over darker gaps; crowd noise an
+  even haze; music dense, sustained bands. `kerf-cli spectrogram show.kerf -o s.png --start …`.
+- In `run`, add `--images DIR` to get every waveform/spectrogram step as a PNG file.
 - `find_silences`, and `detect_songs` (song starts in live recordings, with a confidence for each).
 - `compare` is a null test: against `{"history": n}` it shows exactly what an edit changed; against
   an exported file, whether the export matches.
@@ -60,8 +64,9 @@ written.
 2. `detect_songs` (with `songs` and `setlist` if known) without `apply`. Inspect weak or doubtful
    boundaries with `waveform`. Tell the user which ones you're unsure about.
    - Broadcasts (radio, TV) are heavily compressed and often have presenters talking over the
-     music; detection finds false starts there. Use the setlist, the song lengths and the
-     waveform, and other tools if available (a spectrogram, a speech transcript) to place starts.
+     music; detection finds false starts there. Use the setlist, the song lengths, the waveform
+     and `spectrogram` (to see where people talk), and a speech transcript if a tool for one is
+     available, to place starts.
 3. Place the agreed starts in one step with `set_markers`, then let the user check them in the
    Kerf app (it opens the `.kerf`, with the history) before exporting.
 4. Album details with `set_album`; `album_summary`, then `album_loudness` (e.g. -16 LUFS, -1 dBFS

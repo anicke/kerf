@@ -409,6 +409,36 @@ pub enum Request {
         db_scale: bool,
     },
 
+    /// Draw a spectrogram of a range (default: everything) as a PNG image:
+    /// time left to right, frequency bottom to top (log scale by default),
+    /// brighter for louder, scaled to the loudest point in view. Tells
+    /// speech from music where a waveform can't: speech shows as stacked
+    /// harmonics that come and go with the syllables, crowd noise as an even
+    /// haze, music as dense sustained bands. Markers are yellow lines; dotted
+    /// lines mark the time grid and 100 Hz, 1 kHz and 10 kHz.
+    Spectrogram {
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+        /// Image width in pixels (200–4000, default 1200).
+        #[serde(default)]
+        width: Option<u32>,
+        /// Image height in pixels (100–2000, default 300).
+        #[serde(default)]
+        height: Option<u32>,
+        /// Highest frequency shown in Hz (1000 up to half the sample rate;
+        /// default 16000).
+        #[serde(default)]
+        max_hz: Option<f64>,
+        /// Linear frequency scale instead of logarithmic (spreads out the
+        /// upper frequencies, where speech consonants and cymbals are).
+        #[serde(default)]
+        linear: bool,
+    },
+
     // --- Edit ---------------------------------------------------------------
     /// Split clips at a time (non-destructive: the audio is unchanged).
     Split {
@@ -635,6 +665,7 @@ pub enum Data {
     },
     Silences(Silences),
     Waveform(WaveformInfo),
+    Spectrogram(SpectrogramInfo),
     Album(AlbumReport),
     AlbumLoudness(LoudnessChange),
     Export(ExportReport),
@@ -772,6 +803,57 @@ pub struct WaveformInfo {
     pub db_scale: bool,
     /// Markers in view, with their pixel column.
     pub markers: Vec<WaveformMarker>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpectrogramInfo {
+    /// The image (PNG, base64).
+    pub png_base64: String,
+    pub width: u32,
+    pub height: u32,
+    pub start: TimePos,
+    pub end: TimePos,
+    /// Timeline seconds covered by one pixel column.
+    pub seconds_per_pixel: f64,
+    /// Spacing of the dotted time grid.
+    pub grid_secs: f64,
+    /// Frequency range shown, bottom to top.
+    pub min_hz: f64,
+    pub max_hz: f64,
+    pub log_freq: bool,
+    /// Level of the brightest colour (dB relative to a full-scale sine);
+    /// black is `range_db` below it.
+    pub top_db: f64,
+    pub range_db: f64,
+    /// Rows of the dotted frequency lines.
+    pub freq_lines: Vec<FreqLine>,
+    /// Markers in view, with their pixel column.
+    pub markers: Vec<WaveformMarker>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FreqLine {
+    pub hz: f64,
+    pub y: u32,
+}
+
+impl Data {
+    /// The PNG image (base64) of a waveform or spectrogram.
+    pub fn png_base64_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Data::Waveform(w) => Some(&mut w.png_base64),
+            Data::Spectrogram(s) => Some(&mut s.png_base64),
+            _ => None,
+        }
+    }
+
+    pub fn png_base64(&self) -> Option<&str> {
+        match self {
+            Data::Waveform(w) => Some(&w.png_base64),
+            Data::Spectrogram(s) => Some(&s.png_base64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

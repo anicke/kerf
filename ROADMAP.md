@@ -254,10 +254,11 @@ and matching lyrics and speech by hand.
 
 **Finding the songs**, in order of payoff:
 
-1. **`spectrogram` tool** next to `waveform` (op, CLI and MCP; later a view in the app): a PNG of
-   frequency over time for a range, linear or log frequency, with the same pixel-to-time
-   reporting and marker lines. Speech, crowd noise and music look distinct here, unlike in peaks.
-   Cheap, no new dependencies. Overlaps the spectral view under *Later*.
+1. ~~**`spectrogram` tool**~~ (done: op, CLI `kerf-cli spectrogram` and MCP, with
+   `run --images DIR` for images from any step; mono mix, log or linear frequency up to 16 kHz by
+   default, 80 dB below the loudest point, markers, time grid and 100 Hz / 1 kHz / 10 kHz lines
+   with their rows reported. A view in the app is still to do, with the spectral view under
+   *Later*.)
 2. **Speech and voice-over detection** (`find_speech`): ranges where someone is talking, and
    whether music is playing underneath (a host over the band's intro, or over crowd noise
    between songs). Start with a lightweight speech/music classifier in pure Rust: spectral flux,
