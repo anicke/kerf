@@ -12,8 +12,25 @@
 //!   spectrum), applause and crowd noise are close to broadband noise (a flat
 //!   spectrum). This separates a loud ovation from the next song.
 //!
+//! Radio and TV broadcasts are compressed so hard that neither cue works:
+//! the gaps are as loud as the songs, and distorted guitars are as noise-like
+//! as applause. Three more measurements cover them:
+//!
+//! * **Bass**: a band has kick drum and bass guitar; crowd noise and talk
+//!   have little below 150 Hz.
+//! * **Tonal persistence**: music's harmonics hold from one moment to the
+//!   next; crowd noise and speech change constantly.
+//! * **Talk** ([`crate::speech`]): presenters and band banter between songs.
+//!
+//! Missing bass together with low persistence, or talk, marks a gap. Either
+//! alone doesn't (a bass-less ballad passage, a busy arrangement). When the
+//! loudness and noise cues fire across most of a recording they carry no
+//! information, and count for less.
+//!
 //! Spoken introductions count as part of the next song (the usual live-album
-//! convention): quiet speech is pitched sound, not crowd noise.
+//! convention): the marker goes where the talk leading into the music
+//! starts. Talk at the very start (a presenter's introduction) or end of a
+//! recording becomes its own "Intro" or "Outro" marker instead of a song.
 //!
 //! [`analyze`] does the expensive pass once; [`find_boundaries`] then runs in
 //! microseconds, so settings can be adjusted with a live preview.
@@ -35,6 +52,14 @@ const FFT_LEN: usize = 2048;
 const FLATNESS_BAND: (f64, f64) = (200.0, 6000.0);
 /// Below this level a hop counts as silent.
 const FLOOR_LUFS: f32 = -100.0;
+/// Bass is measured in this band, relative to the band above it.
+const BASS_BAND: (f64, f64) = (40.0, 150.0);
+const MID_BAND: (f64, f64) = (150.0, 4000.0);
+/// Tonal persistence compares spectra this many hops apart (300 ms).
+const PERSIST_LAG: usize = 3;
+/// Width (Hz) of the smoothing that separates a spectrum's fine structure
+/// (harmonics) from its overall shape.
+const FINE_HZ: f64 = 200.0;
 
 /// Measurements of a range, one value per hop (100 ms).
 pub struct Analysis {
@@ -52,6 +77,14 @@ pub struct Analysis {
     pub flatness_smooth: Vec<f32>,
     /// Typical loudness of the songs: the 80th percentile of short-term loudness.
     pub reference: f32,
+    /// Bass (40–150 Hz) relative to 150–4000 Hz, dB, median over 2 s.
+    pub bass_db: Vec<f32>,
+    /// Correlation of the spectrum's fine structure with 300 ms earlier,
+    /// median over 2 s: high for music, low for crowd noise and speech.
+    pub persistence: Vec<f32>,
+    /// How much each hop sounds like talk, 0..1 (see [`crate::speech::scores`]),
+    /// within stretches of talk; 0 elsewhere.
+    pub speech: Vec<f32>,
 }
 
 impl Analysis {
@@ -104,6 +137,16 @@ pub fn analyze(
     let bin = |hz: f64| (hz * FFT_LEN as f64 / sr as f64) as usize;
     let lo = bin(FLATNESS_BAND.0).max(1);
     let hi = bin(FLATNESS_BAND.1).min(FFT_LEN / 2).max(lo + 1);
+    let (bass_lo, bass_hi) = (bin(BASS_BAND.0).max(1), bin(BASS_BAND.1).max(2));
+    let (mid_lo, mid_hi) = (bass_hi, bin(MID_BAND.1).min(FFT_LEN / 2).max(bass_hi + 1));
+    let fine_half = ((FINE_HZ * FFT_LEN as f64 / sr as f64) / 2.0)
+        .round()
+        .max(1.0) as usize;
+    let mut bass = Vec::new();
+    let mut persistence = Vec::new();
+    let mut fine_ring: Vec<Vec<f32>> = vec![Vec::new(); PERSIST_LAG];
+    let mut log_mid = vec![0f32; mid_hi - mid_lo];
+    let mut fine = vec![0f32; mid_hi - mid_lo];
 
     let total = (end - start) as f64;
     let mut done = 0usize;
@@ -135,12 +178,58 @@ pub fn analyze(
                     }
                     let _ = fft.process_with_scratch(&mut fft_in, &mut fft_out, &mut fft_scratch);
                     flatness.push(spectral_flatness(&fft_out[lo..hi]));
+                    let power = |r: std::ops::Range<usize>| {
+                        fft_out[r].iter().map(|c| c.norm_sqr() as f64).sum::<f64>()
+                    };
+                    let (b, m) = (power(bass_lo..bass_hi), power(mid_lo..mid_hi));
+                    bass.push((10.0 * ((b + 1e-12) / (m + 1e-12)).log10()) as f32);
+                    // Fine structure: the log spectrum minus its local average.
+                    for (j, v) in log_mid.iter_mut().enumerate() {
+                        *v = (fft_out[mid_lo + j].norm_sqr() + 1e-12).ln();
+                    }
+                    let mut sum: f32 = log_mid[..fine_half.min(log_mid.len())].iter().sum();
+                    let mut count = fine_half.min(log_mid.len());
+                    for j in 0..log_mid.len() {
+                        if j + fine_half < log_mid.len() {
+                            sum += log_mid[j + fine_half];
+                            count += 1;
+                        }
+                        if j > fine_half {
+                            sum -= log_mid[j - fine_half - 1];
+                            count -= 1;
+                        }
+                        fine[j] = log_mid[j] - sum / count as f32;
+                    }
+                    let k = energy.len() - 1;
+                    let earlier = &fine_ring[k % PERSIST_LAG];
+                    persistence.push(if earlier.len() == fine.len() {
+                        correlation(&fine, earlier)
+                    } else {
+                        0.0
+                    });
+                    fine_ring[k % PERSIST_LAG].clone_from(&fine);
                 }
             }
             done += n;
-            Ok(progress(done as f64 / total))
+            Ok(progress(0.7 * done as f64 / total))
         },
     )?;
+
+    // Talk, from a second pass over the audio.
+    let sp = crate::speech::features(p, tracks, start, end, &mut |f| progress(0.7 + 0.3 * f))?;
+    // Only stretches `find_speech` would report: a moment where a loud song
+    // ends into quieter noise can look like a syllable, but not like talk.
+    let scores = crate::speech::scores(&sp);
+    let mut speech = vec![0f32; energy.len()];
+    for r in crate::speech::find(&sp, crate::speech::MIN_SPEECH_SECS) {
+        let (a, b) = (
+            ((r.start - start) / sp.hop) as usize,
+            ((r.end - start) / sp.hop) as usize,
+        );
+        for k in a..b.min(speech.len()) {
+            speech[k] = scores.get(k).copied().unwrap_or(0.0);
+        }
+    }
 
     let loud = |z: f64| {
         if z > 1e-10 {
@@ -170,6 +259,7 @@ pub fn analyze(
         .copied()
         .unwrap_or(FLOOR_LUFS);
 
+    let two_secs = (1.0 / HOP_SECS) as usize;
     Ok(Analysis {
         start,
         end,
@@ -179,11 +269,45 @@ pub fn analyze(
         flatness,
         flatness_smooth,
         reference,
+        bass_db: median_filter(&bass, two_secs),
+        persistence: median_filter(&persistence, two_secs),
+        speech,
     })
 }
 
+/// Pearson correlation of two equally long vectors.
+fn correlation(a: &[f32], b: &[f32]) -> f32 {
+    let n = a.len() as f32;
+    let (ma, mb) = (a.iter().sum::<f32>() / n, b.iter().sum::<f32>() / n);
+    let (mut ab, mut aa, mut bb) = (0f32, 0f32, 0f32);
+    for (x, y) in a.iter().zip(b) {
+        let (x, y) = (x - ma, y - mb);
+        ab += x * y;
+        aa += x * x;
+        bb += y * y;
+    }
+    if aa <= 0.0 || bb <= 0.0 {
+        0.0
+    } else {
+        ab / (aa * bb).sqrt()
+    }
+}
+
+/// Median of each value with `half` neighbours either side.
+pub(crate) fn median_filter(v: &[f32], half: usize) -> Vec<f32> {
+    let mut buf = Vec::with_capacity(2 * half + 1);
+    (0..v.len())
+        .map(|i| {
+            buf.clear();
+            buf.extend_from_slice(&v[i.saturating_sub(half)..(i + half + 1).min(v.len())]);
+            buf.sort_by(f32::total_cmp);
+            buf[buf.len() / 2]
+        })
+        .collect()
+}
+
 /// Geometric over arithmetic mean of the power spectrum (silence counts as flat).
-fn spectral_flatness(bins: &[realfft::num_complex::Complex<f32>]) -> f32 {
+pub(crate) fn spectral_flatness(bins: &[realfft::num_complex::Complex<f32>]) -> f32 {
     let n = bins.len() as f64;
     let (mut log_sum, mut sum) = (0.0f64, 0.0f64);
     for b in bins {
@@ -253,10 +377,24 @@ impl Default for DetectSettings {
     }
 }
 
+/// What a boundary starts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoundaryKind {
+    /// The next song.
+    #[default]
+    Song,
+    /// The first song, after an introduction that is mostly talk (a
+    /// presenter): the range start begins an "Intro" instead of a song.
+    AfterIntro,
+    /// Closing talk after the last song: an "Outro", not a song.
+    Outro,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Boundary {
     /// Where the next song's marker goes.
     pub position: Frame,
+    pub kind: BoundaryKind,
     /// How clearly this is a song change, 0..1.
     pub strength: f32,
     /// The gap between songs.
@@ -278,6 +416,71 @@ fn gapness(reference: f32, loudness: f32, flatness: f32) -> f32 {
 
 const GAP: f32 = 0.5;
 
+/// Between-songs evidence from bass, persistence and talk, 0..1: missing
+/// bass *and* unsteady harmonics (crowd noise, talk), or talk itself.
+fn broadcast_cues(a: &Analysis, k: usize) -> f32 {
+    let no_bass = ((-3.0 - a.bass_db[k]) / 9.0).clamp(0.0, 1.0);
+    let unsteady = ((0.13 - a.persistence[k]) / 0.06).clamp(0.0, 1.0);
+    let cues = no_bass.min(unsteady).max(a.speech[k]);
+    // Weak hints (a little bass missing, a moment of talk-like sound) don't count.
+    ((cues - 0.3) / 0.5).clamp(0.0, 1.0)
+}
+
+/// The gap measure: loudness and noise (weighted by how informative they are
+/// in this recording) plus bass, persistence and talk.
+struct Gaps<'a> {
+    a: &'a Analysis,
+    /// Weight of the loudness/noise cue.
+    old_weight: f32,
+}
+
+impl<'a> Gaps<'a> {
+    fn new(a: &'a Analysis) -> Self {
+        // A cue that fires across most of the recording (hard-compressed
+        // broadcasts of loud, distorted music) tells songs and gaps apart
+        // poorly, so it counts for less there.
+        let audible: Vec<usize> = (0..a.len()).filter(|&k| a.short_term[k] > -70.0).collect();
+        let firing = audible
+            .iter()
+            .filter(|&&k| gapness(a.reference, a.short_term[k], a.flatness_smooth[k]) > GAP)
+            .count();
+        let share = firing as f32 / audible.len().max(1) as f32;
+        Self {
+            a,
+            old_weight: (1.0 - (share - 0.3) / 0.3).clamp(0.4, 1.0),
+        }
+    }
+
+    /// Gap measure of hop `k`: robust (3 s loudness, smoothed flatness) or
+    /// precise (400 ms loudness, flatness of the hop itself).
+    fn at(&self, k: usize, precise: bool) -> f32 {
+        let a = self.a;
+        let old = if precise {
+            gapness(a.reference, a.momentary[k], a.flatness[k])
+        } else {
+            gapness(a.reference, a.short_term[k], a.flatness_smooth[k])
+        };
+        (self.old_weight * old + 0.6 * broadcast_cues(a, k)).min(1.0)
+    }
+}
+
+/// Share of hops `from..to` that are talk.
+fn talk_share(a: &Analysis, from: usize, to: usize) -> f32 {
+    let to = to.min(a.len());
+    if to <= from {
+        return 0.0;
+    }
+    a.speech[from..to].iter().filter(|&&v| v > 0.5).count() as f32 / (to - from) as f32
+}
+
+/// Hop index of a timeline frame.
+fn hop_of(a: &Analysis, f: Frame) -> usize {
+    (f.saturating_sub(a.start) / a.hop.max(1)) as usize
+}
+
+/// An intro or outro must be mostly talk and within this much of the edge.
+const EDGE_TALK_SECS: f64 = 300.0;
+
 /// Song boundaries (sorted by position), not including the range start.
 pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
     let n = a.len();
@@ -285,9 +488,8 @@ pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
         return Vec::new();
     }
     let hops = |secs: f64| (secs / HOP_SECS).round() as usize;
-    let g: Vec<f32> = (0..n)
-        .map(|k| gapness(a.reference, a.short_term[k], a.flatness_smooth[k]))
-        .collect();
+    let gaps = Gaps::new(a);
+    let g: Vec<f32> = (0..n).map(|k| gaps.at(k, false)).collect();
 
     // Runs of gap hops, merging runs split by brief blips (a shout, a chord).
     let mut runs: Vec<(usize, usize)> = Vec::new();
@@ -307,27 +509,76 @@ pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
         }
     }
 
-    // Gaps touching the range edges are intros/outros, not song changes.
-    let mut candidates: Vec<Boundary> = runs
+    // Gaps touching the range edges can only be a spoken intro or outro,
+    // never a song change.
+    let mut candidates: Vec<(Boundary, Frame)> = runs
         .into_iter()
-        .filter(|&(s0, s1)| s1 - s0 >= hops(s.min_gap_secs).max(1) && s0 > 0 && s1 < n)
+        .filter(|&(s0, s1)| s1 - s0 >= hops(s.min_gap_secs).max(1) && s0 < s1 && s1 <= n)
         .map(|(s0, s1)| {
             let mean = g[s0..s1].iter().sum::<f32>() / (s1 - s0) as f32;
             let duration = ((s1 - s0) as f64 * HOP_SECS) as f32;
             let strength = mean * (0.5 + 0.5 * (duration / 6.0).min(1.0));
-            Boundary {
-                position: place(a, s0, s1, s),
-                strength,
-                gap_start: a.frame_of(s0),
-                gap_end: a.frame_of(s1),
-            }
+            let (position, onset) = place(a, &gaps, s0, s1, s);
+            (
+                Boundary {
+                    position,
+                    kind: BoundaryKind::Song,
+                    strength,
+                    gap_start: a.frame_of(s0),
+                    gap_end: a.frame_of(s1),
+                },
+                onset,
+            )
         })
         .collect();
 
+    let min_strength = 0.9 - 0.4 * s.sensitivity.clamp(0.0, 1.0);
+    let strong = |b: &Boundary| s.expected_songs.is_some() || b.strength >= min_strength;
+    let edge = hops(EDGE_TALK_SECS);
+
+    // A presenter's introduction: mostly talk from the range start up to a
+    // gap near it. The first song starts where the music does.
+    let intro = candidates
+        .iter()
+        .position(|(b, _)| {
+            let to = hop_of(a, b.gap_end);
+            to <= edge && strong(b) && talk_share(a, 0, to) >= 0.5
+        })
+        .map(|i| {
+            let (mut b, onset) = candidates.remove(i);
+            b.kind = BoundaryKind::AfterIntro;
+            b.position = onset;
+            b
+        });
+    // Closing talk: mostly talk from a gap near the range end to the end.
+    let outro = candidates
+        .iter()
+        .rposition(|(b, _)| {
+            let from = hop_of(a, b.gap_start);
+            n - from <= edge && strong(b) && talk_share(a, from, n) >= 0.5
+        })
+        .map(|i| {
+            let (mut b, _) = candidates.remove(i);
+            b.kind = BoundaryKind::Outro;
+            // The talk starts it; applause before it stays with the last song.
+            let from = hop_of(a, b.gap_start);
+            let to = hop_of(a, b.gap_end).max(from);
+            if let Some(k) = (from..to).find(|&k| a.speech[k] > 0.5) {
+                b.position = a.frame_of(k);
+            }
+            b
+        });
+
     // Strongest first; keep songs at least `min_song_secs` long.
+    let mut candidates: Vec<Boundary> = candidates
+        .into_iter()
+        .map(|(b, _)| b)
+        .filter(|b| b.gap_start > a.start && b.gap_end < a.frame_of(n))
+        .collect();
     candidates.sort_by(|x, y| y.strength.total_cmp(&x.strength));
     let min_song = (s.min_song_secs * a.hop as f64 / HOP_SECS) as Frame;
-    let min_strength = 0.9 - 0.4 * s.sensitivity.clamp(0.0, 1.0);
+    let first = intro.as_ref().map_or(a.start, |b| b.position);
+    let last = outro.as_ref().map_or(a.end, |b| b.position);
     let wanted = s.expected_songs.map(|n| n.saturating_sub(1));
     let mut chosen: Vec<Boundary> = Vec::new();
     for c in candidates {
@@ -337,8 +588,8 @@ pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
         if wanted.is_none() && c.strength < min_strength {
             break;
         }
-        let fits = c.position >= a.start + min_song
-            && c.position + min_song <= a.end
+        let fits = c.position >= first + min_song
+            && c.position + min_song <= last
             && chosen
                 .iter()
                 .all(|b| b.position.abs_diff(c.position) >= min_song);
@@ -346,53 +597,100 @@ pub fn find_boundaries(a: &Analysis, s: &DetectSettings) -> Vec<Boundary> {
             chosen.push(c);
         }
     }
+    chosen.extend(intro);
+    chosen.extend(outro);
     chosen.sort_by_key(|b| b.position);
     chosen
 }
 
-/// Marker position for the gap `s0..s1` (in hops).
-fn place(a: &Analysis, s0: usize, s1: usize, s: &DetectSettings) -> Frame {
+/// Marker position for the gap `s0..s1` (in hops), and where the music
+/// resumes.
+fn place(a: &Analysis, gaps: &Gaps, s0: usize, s1: usize, s: &DetectSettings) -> (Frame, Frame) {
     let n = a.len();
     let gap_start = a.frame_of(s0);
-    match s.placement {
+    // The 3 s gap measure smears edges; find the precise onset with the
+    // 400 ms measure: the first moment music holds for a full second.
+    let hold = 10;
+    let from = s1.saturating_sub(30).max(s0);
+    let to = (s1 + 30).min(n);
+    let music = |k: usize| gaps.at(k, true) <= GAP;
+    let onset = (from..to)
+        .find(|&k| (k..(k + hold).min(n)).all(music))
+        .unwrap_or(s1);
+    let pre_roll = (s.pre_roll_secs * a.hop as f64 / HOP_SECS) as Frame;
+    let at_onset = a.frame_of(onset).saturating_sub(pre_roll).max(gap_start);
+    let position = match s.placement {
         Placement::QuietestPoint => {
             let k = (s0..s1)
                 .min_by(|&x, &y| a.momentary[x].total_cmp(&a.momentary[y]))
                 .unwrap_or(s0);
             a.frame_of(k)
         }
-        Placement::MusicStart => {
-            // The 3 s gap measure smears edges; find the precise onset with the
-            // 400 ms measure: the first moment music holds for a full second.
-            let hold = 10;
-            let from = s1.saturating_sub(30).max(s0);
-            let to = (s1 + 30).min(n);
-            let music = |k: usize| gapness(a.reference, a.momentary[k], a.flatness[k]) <= GAP;
-            let onset = (from..to)
-                .find(|&k| (k..(k + hold).min(n)).all(music))
-                .unwrap_or(s1);
-            let pre_roll = (s.pre_roll_secs * a.hop as f64 / HOP_SECS) as Frame;
-            a.frame_of(onset).saturating_sub(pre_roll).max(gap_start)
+        Placement::MusicStart => match lead_in_talk(a, s0, onset) {
+            // Talk leading into the song belongs to it.
+            Some(k) => a.frame_of(k).saturating_sub(pre_roll).max(gap_start),
+            None => at_onset,
+        },
+    };
+    (position, at_onset)
+}
+
+/// Start (hop) of talk that leads into the music at `onset`: talk ending at
+/// most 5 s before it, with pauses (cheering between sentences) under 8 s,
+/// not before `from`.
+fn lead_in_talk(a: &Analysis, from: usize, onset: usize) -> Option<usize> {
+    let talk = |k: usize| a.speech.get(k).is_some_and(|&v| v > 0.5);
+    let last = (from..onset).rev().take(50).find(|&k| talk(k))?;
+    let mut start = last;
+    let mut k = last;
+    while k > from {
+        k -= 1;
+        if talk(k) {
+            start = k;
+        } else if start - k >= 80 {
+            break;
         }
     }
+    Some(start)
+}
+
+/// Names for the markers of [`find_boundaries`]'s result: "Intro" and
+/// "Outro" for talk at the edges, setlist titles (see [`marker_names`]) for
+/// the songs. With `marker_at_start` the first name is for the range start.
+pub fn segment_names(found: &[Boundary], setlist: &str, marker_at_start: bool) -> Vec<String> {
+    let intro = found
+        .first()
+        .is_some_and(|b| b.kind == BoundaryKind::AfterIntro);
+    let songs = usize::from(!intro)
+        + found
+            .iter()
+            .filter(|b| b.kind != BoundaryKind::Outro)
+            .count();
+    let mut titles = marker_names(setlist, songs).into_iter();
+    let mut names = vec![if intro {
+        "Intro".to_string()
+    } else {
+        titles.next().unwrap_or_default()
+    }];
+    for b in found {
+        names.push(match b.kind {
+            BoundaryKind::Outro => "Outro".to_string(),
+            _ => titles.next().unwrap_or_default(),
+        });
+    }
+    if !marker_at_start {
+        names.remove(0);
+    }
+    names
 }
 
 /// Marker names from a pasted setlist (one title per line; leading numbering
-/// like "1.", "01 -" or "3)" is removed), padded with "Track NN".
+/// like "1.", "01 -", "3)" or "07 " is removed, but not a number that starts
+/// the title, as in "7 Days to the Wolves"), padded with "Track NN".
 pub fn marker_names(setlist: &str, count: usize) -> Vec<String> {
     let titles: Vec<String> = setlist
         .lines()
-        .map(|l| {
-            let t = l.trim();
-            let rest = t.trim_start_matches(|c: char| c.is_ascii_digit());
-            if rest.len() < t.len() {
-                let rest = rest.trim_start_matches(['.', ')', '-', ':', ' ', '\t']);
-                if !rest.is_empty() {
-                    return rest.trim().to_string();
-                }
-            }
-            t.to_string()
-        })
+        .map(|l| strip_numbering(l.trim()).to_string())
         .filter(|t| !t.is_empty())
         .collect();
     (0..count)
@@ -403,6 +701,31 @@ pub fn marker_names(setlist: &str, count: usize) -> Vec<String> {
                 .unwrap_or_else(|| format!("Track {:02}", i + 1))
         })
         .collect()
+}
+
+/// A title without its list numbering.
+fn strip_numbering(t: &str) -> &str {
+    let rest = t.trim_start_matches(|c: char| c.is_ascii_digit());
+    let digits = &t[..t.len() - rest.len()];
+    if digits.is_empty() || rest.is_empty() {
+        return t;
+    }
+    let after = rest.trim_start_matches([' ', '\t']);
+    // "1." "3)" "02 -" "4:" — punctuation marks numbering.
+    if let Some(title) = after.strip_prefix(['.', ')', '-', ':']) {
+        let title = title
+            .trim_start_matches(['.', ')', '-', ':', ' ', '\t'])
+            .trim();
+        if !title.is_empty() {
+            return title;
+        }
+    }
+    // "07 Song" or a tab: a zero-padded number or a tab before the title.
+    let padded = digits.len() > 1 && digits.starts_with('0');
+    if (padded || rest.starts_with('\t')) && !after.is_empty() {
+        return after.trim();
+    }
+    t
 }
 
 /// Replace earlier automatic markers in `start..=end` with markers at
@@ -600,6 +923,89 @@ mod tests {
         assert!(find_boundaries(&analyse(&p), &DetectSettings::default()).is_empty());
     }
 
+    /// A presenter talks over crowd noise, the band plays two songs with an
+    /// ovation between them, then the singer introduces the third.
+    fn broadcast_show() -> (Project, Vec<f64>) {
+        assert_eq!(SR, crate::speech::tests::SR);
+        let mut rng = Noise(0x2468);
+        let mut a = Vec::new();
+        let secs = |v: &Vec<f32>| v.len() as f64 / SR as f64;
+        let talk = |a: &mut Vec<f32>, s: f64, seed, rng: &mut Noise| {
+            for v in crate::speech::tests::talk(s, 0.5, seed) {
+                a.push(v + rng.next() * 0.01);
+            }
+        };
+        talk(&mut a, 25.0, 1, &mut rng);
+        let mut starts = vec![secs(&a)];
+        song(&mut a, 90.0, 220.0, 0.5);
+        applause(&mut a, 8.0, 0.1, &mut rng);
+        starts.push(secs(&a));
+        song(&mut a, 90.0, 196.0, 0.5);
+        applause(&mut a, 4.0, 0.08, &mut rng);
+        starts.push(secs(&a)); // the singer's introduction belongs to song 3
+        talk(&mut a, 8.0, 2, &mut rng);
+        song(&mut a, 90.0, 262.0, 0.5);
+        applause(&mut a, 6.0, 0.1, &mut rng);
+        let mut p = Project::new(SR, 1);
+        p.add_source_as_track("show", None, AudioBuffer::new(SR, vec![a]), 0);
+        (p, starts)
+    }
+
+    #[test]
+    fn spoken_intro_and_talk_leading_into_a_song() {
+        let (p, starts) = broadcast_show();
+        let a = analyse(&p);
+        let found = find_boundaries(&a, &DetectSettings::default());
+        let at = |b: &Boundary| b.position as f64 / SR as f64;
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert_eq!(found[0].kind, BoundaryKind::AfterIntro);
+        assert!(
+            (at(&found[0]) - starts[0]).abs() < 1.5,
+            "first song: {found:?}"
+        );
+        assert_eq!(found[1].kind, BoundaryKind::Song);
+        assert!((at(&found[1]) - starts[1]).abs() < 1.5, "{found:?}");
+        assert!(
+            (at(&found[2]) - starts[2]).abs() < 1.5,
+            "marker where the talk starts, not the music: {found:?}"
+        );
+        assert_eq!(
+            segment_names(&found, "A\nB\nC", true),
+            ["Intro", "A", "B", "C"]
+        );
+        // Counting songs doesn't count the intro.
+        let s = DetectSettings {
+            expected_songs: Some(2),
+            ..Default::default()
+        };
+        let two = find_boundaries(&a, &s);
+        assert_eq!(two.len(), 2, "{two:?}");
+        assert_eq!(two[0].kind, BoundaryKind::AfterIntro);
+    }
+
+    #[test]
+    fn names_for_edges() {
+        let b = |kind| Boundary {
+            position: 0,
+            kind,
+            strength: 1.0,
+            gap_start: 0,
+            gap_end: 0,
+        };
+        let found = [b(BoundaryKind::Song), b(BoundaryKind::Outro)];
+        assert_eq!(
+            segment_names(&found, "One\nTwo", true),
+            ["One", "Two", "Outro"]
+        );
+        assert_eq!(segment_names(&found, "One\nTwo", false), ["Two", "Outro"]);
+        let found = [b(BoundaryKind::AfterIntro), b(BoundaryKind::Song)];
+        assert_eq!(
+            segment_names(&found, "One", true),
+            ["Intro", "One", "Track 02"]
+        );
+        assert_eq!(segment_names(&[], "One", true), ["One"]);
+    }
+
     #[test]
     fn setlist_parsing() {
         let names = marker_names("1. Intro\n\n02 - Second Song\n3) Third: Live\nEncore", 6);
@@ -618,6 +1024,20 @@ mod tests {
             marker_names("1999\n", 1),
             ["1999"],
             "a title that is only digits stays"
+        );
+        assert_eq!(
+            marker_names(
+                "7 Days to the Wolves\n99 Luftballons\n07 Nemo\n8\tAmaranth\n9 - Run",
+                5
+            ),
+            [
+                "7 Days to the Wolves",
+                "99 Luftballons",
+                "Nemo",
+                "Amaranth",
+                "Run"
+            ],
+            "a number that starts a title stays"
         );
     }
 

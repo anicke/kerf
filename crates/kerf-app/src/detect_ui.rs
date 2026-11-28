@@ -57,7 +57,7 @@ impl DetectState {
             positions.push(self.analysis.start);
         }
         positions.extend(found.iter().map(|b| b.position));
-        let names = detect::marker_names(&self.setlist, positions.len());
+        let names = detect::segment_names(&found, &self.setlist, settings.marker_at_start);
         self.preview = positions.into_iter().zip(names).collect();
         self.dirty = false;
     }

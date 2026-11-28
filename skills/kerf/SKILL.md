@@ -51,6 +51,8 @@ EOF
   is stacked, wavy harmonics that come and go with the syllables over darker gaps; crowd noise an
   even haze; music dense, sustained bands. `kerf-cli spectrogram show.kerf -o s.png --start …`.
 - In `run`, add `--images DIR` to get every waveform/spectrogram step as a PNG file.
+- `find_speech` lists stretches of talk (presenters, band banter; singing isn't talk), with a
+  confidence. It can miss talk drowned by a loud crowd.
 - `find_silences`, and `detect_songs` (song starts in live recordings, with a confidence for each).
 - `compare` is a null test: against `{"history": n}` it shows exactly what an edit changed; against
   an exported file, whether the export matches.
@@ -63,10 +65,13 @@ written.
 1. `info` and `analyze` the recording.
 2. `detect_songs` (with `songs` and `setlist` if known) without `apply`. Inspect weak or doubtful
    boundaries with `waveform`. Tell the user which ones you're unsure about.
-   - Broadcasts (radio, TV) are heavily compressed and often have presenters talking over the
-     music; detection finds false starts there. Use the setlist, the song lengths, the waveform
-     and `spectrogram` (to see where people talk), and a speech transcript if a tool for one is
-     available, to place starts.
+   - Talk at the very start or end (a presenter) comes back as an "Intro"/"Outro" marker, not a
+     song; talk leading into a song is kept with that song.
+   - Broadcasts (radio, TV) are heavily compressed: without `songs`, expect a few extra,
+     lower-confidence starts (a crowd singalong, a presenter over the music). With `songs`, the
+     strongest gaps win, which can still pick one of those over a real change. Check each start
+     with `spectrogram` around it and `find_speech`, compare with the setlist and the song
+     lengths, and use a speech transcript if a tool for one is available.
 3. Place the agreed starts in one step with `set_markers`, then let the user check them in the
    Kerf app (it opens the `.kerf`, with the history) before exporting.
 4. Album details with `set_album`; `album_summary`, then `album_loudness` (e.g. -16 LUFS, -1 dBFS

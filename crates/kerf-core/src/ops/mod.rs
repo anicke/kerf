@@ -321,6 +321,40 @@ impl Session {
             }
 
             req @ R::Compare { .. } => self.compare(req, progress),
+            R::FindSpeech {
+                min_secs,
+                start,
+                end,
+                tracks,
+            } => {
+                let (a, b) = self.range(start.as_ref(), end.as_ref())?;
+                let t = self.tracks(tracks.as_deref())?;
+                let min = min_secs.unwrap_or(crate::speech::MIN_SPEECH_SECS).max(0.1);
+                let f = crate::speech::features(self.project(), &t, a, b, progress)?;
+                let sr = self.project().sample_rate;
+                let ranges: Vec<SpeechSpan> = crate::speech::find(&f, min)
+                    .into_iter()
+                    .map(|r| SpeechSpan {
+                        start: TimePos::new(r.start, sr),
+                        end: TimePos::new(r.end, sr),
+                        length: TimePos::new(r.end - r.start, sr),
+                        confidence: (r.confidence * 100.0).round() / 100.0,
+                    })
+                    .collect();
+                let total_secs = ranges.iter().map(|r| r.length.seconds).sum::<f64>();
+                Ok(Response {
+                    summary: format!(
+                        "{} stretch(es) of talk in {}, {:.1} s in total",
+                        ranges.len(),
+                        self.fmt_span(a, b),
+                        total_secs
+                    ),
+                    data: Data::Speech(SpeechReport {
+                        ranges,
+                        total_secs: (total_secs * 10.0).round() / 10.0,
+                    }),
+                })
+            }
             R::FindSilences {
                 threshold_db,
                 min_secs,
@@ -1383,7 +1417,7 @@ impl Session {
             positions.push(f.position);
             confidence.push(Some((f.strength * 100.0).round() / 100.0));
         }
-        let names = detect::marker_names(setlist, positions.len());
+        let names = detect::segment_names(&found, setlist, true);
         if apply {
             self.apply("Detect song starts", |p| {
                 detect::apply_markers(p, a, b, &positions, &names)
@@ -1401,12 +1435,23 @@ impl Session {
             })
             .collect();
         let n_titles = setlist.lines().filter(|l| !l.trim().is_empty()).count();
+        let edges = found
+            .iter()
+            .filter(|b| b.kind != detect::BoundaryKind::Song)
+            .count();
+        let n_songs = songs.len() - edges;
         let mut summary = format!(
-            "Found {} song(s){}",
-            songs.len(),
+            "Found {n_songs} song(s){}{}",
+            match (found.first().map(|b| b.kind), found.last().map(|b| b.kind)) {
+                (Some(detect::BoundaryKind::AfterIntro), Some(detect::BoundaryKind::Outro)) =>
+                    " plus a spoken intro and outro",
+                (Some(detect::BoundaryKind::AfterIntro), _) => " plus a spoken intro",
+                (_, Some(detect::BoundaryKind::Outro)) => " plus a spoken outro",
+                _ => "",
+            },
             if apply { ", markers placed" } else { "" }
         );
-        if n_titles > 0 && n_titles != songs.len() {
+        if n_titles > 0 && n_titles != n_songs {
             summary += &format!(" (the setlist has {n_titles} titles)");
         }
         Ok(Response {

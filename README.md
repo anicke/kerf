@@ -45,6 +45,9 @@ done, what's next, and known limitations.
   Markers* or *Export Mix with CUE Sheet* (one gapless WAV plus a `.cue` file). Spoken
   introductions stay with the song they introduce. Re-running replaces only automatic markers.
   Songs that flow into each other without a gap need a marker by hand.
+  Radio and TV broadcasts work too, although compression leaves them no quiet gaps: Kerf also
+  listens for missing bass, unsteady harmonics and talk between songs, and a presenter's
+  introduction (or sign-off) becomes its own *Intro* (*Outro*) marker instead of a song.
 - **CD-safe track boundaries.** Split and CUE exports can snap each track boundary to a CD sector
   (1/75 s, moving it at most 6.7 ms; your markers stay put) and pad only the end of the album, so
   there are no sector boundary errors: tracks burn gaplessly as separate files or from the CUE
@@ -251,8 +254,9 @@ command is the AppImage itself and `kerf-mcp` its first argument.
   types so they always match. Each returns a one-line summary plus details as JSON.
 - **Seeing audio:** an assistant can't listen, so `waveform` returns a picture of any range
   (zoom in by choosing start and end), `spectrogram` shows frequency over time (where speech,
-  crowd noise and music look different, unlike in a waveform), and `analyze`, `find_silences`
-  and `detect_songs` report levels and positions. `compare` is a null test: against an earlier `history` state it shows
+  crowd noise and music look different, unlike in a waveform), `find_speech` lists where
+  people talk (presenters, banter between songs), and `analyze`, `find_silences` and
+  `detect_songs` report levels and positions. `compare` is a null test: against an earlier `history` state it shows
   exactly what an edit changed, and against an exported file that the export matches.
 - **Safe by design:** every edit is one undoable step; `open` and `new` won't drop unsaved changes
   unless asked; exports never overwrite without `force`, and dry runs show exactly what would be

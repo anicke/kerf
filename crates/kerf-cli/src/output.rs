@@ -189,6 +189,14 @@ fn print_response(r: &Response) {
                 println!("  …");
             }
         }
+        Data::Speech(sp) => {
+            for r in &sp.ranges {
+                println!(
+                    "  {:>12} – {:<12} ({})  confidence {:.2}",
+                    r.start.time, r.end.time, r.length.time, r.confidence
+                );
+            }
+        }
         Data::Waveform(w) => {
             for m in &w.markers {
                 println!("  x = {:>4}  {:>12}  {}", m.x, m.position.time, m.name);

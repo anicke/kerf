@@ -38,6 +38,7 @@ pub mod render;
 pub mod resample;
 pub mod session;
 pub mod spectrogram;
+pub mod speech;
 pub mod store;
 pub mod util;
 pub mod waveform;

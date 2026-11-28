@@ -387,6 +387,22 @@ pub enum Request {
         #[serde(default)]
         tracks: Tracks,
     },
+    /// Stretches of talk: presenters, announcements, a band talking to the
+    /// crowd between songs, including a presenter over music. Singing is not
+    /// talk. Each range has a confidence (0.5–1). Measured, not transcribed:
+    /// it can miss talk drowned by a loud crowd; check doubtful places with
+    /// `spectrogram`.
+    FindSpeech {
+        /// Shortest stretch reported, in seconds (default 1.5).
+        #[serde(default)]
+        min_secs: Option<f64>,
+        #[serde(default)]
+        start: Option<Time>,
+        #[serde(default)]
+        end: Option<Time>,
+        #[serde(default)]
+        tracks: Tracks,
+    },
     /// Draw the waveform of a range (default: everything) as a PNG image,
     /// one lane per channel: peaks in blue, RMS lighter, samples over 0 dBFS
     /// in red, markers as yellow lines, faint vertical lines every
@@ -664,6 +680,7 @@ pub enum Data {
         tracks: Vec<NormalizedTrack>,
     },
     Silences(Silences),
+    Speech(SpeechReport),
     Waveform(WaveformInfo),
     Spectrogram(SpectrogramInfo),
     Album(AlbumReport),
@@ -778,6 +795,22 @@ pub struct Silences {
     pub ranges: Vec<Span>,
     /// More ranges were found than are listed.
     pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpeechReport {
+    pub ranges: Vec<SpeechSpan>,
+    /// Seconds of talk in total.
+    pub total_secs: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SpeechSpan {
+    pub start: TimePos,
+    pub end: TimePos,
+    pub length: TimePos,
+    /// How clearly it is talk, 0.5–1.
+    pub confidence: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

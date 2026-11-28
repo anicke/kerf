@@ -23,6 +23,36 @@ impl Biquad {
         }
     }
 
+    /// Second-order high-pass (RBJ cookbook, Butterworth Q).
+    pub(crate) fn highpass(sample_rate: f64, hz: f64) -> Self {
+        let w = 2.0 * std::f64::consts::PI * hz / sample_rate;
+        let (cos, alpha) = (w.cos(), w.sin() / (2.0 * std::f64::consts::FRAC_1_SQRT_2));
+        let a0 = 1.0 + alpha;
+        Self::new(
+            [
+                (1.0 + cos) / 2.0 / a0,
+                -(1.0 + cos) / a0,
+                (1.0 + cos) / 2.0 / a0,
+            ],
+            [1.0, -2.0 * cos / a0, (1.0 - alpha) / a0],
+        )
+    }
+
+    /// Second-order low-pass (RBJ cookbook, Butterworth Q).
+    pub(crate) fn lowpass(sample_rate: f64, hz: f64) -> Self {
+        let w = 2.0 * std::f64::consts::PI * hz / sample_rate;
+        let (cos, alpha) = (w.cos(), w.sin() / (2.0 * std::f64::consts::FRAC_1_SQRT_2));
+        let a0 = 1.0 + alpha;
+        Self::new(
+            [
+                (1.0 - cos) / 2.0 / a0,
+                (1.0 - cos) / a0,
+                (1.0 - cos) / 2.0 / a0,
+            ],
+            [1.0, -2.0 * cos / a0, (1.0 - alpha) / a0],
+        )
+    }
+
     #[inline]
     pub(crate) fn process(&mut self, x: f64) -> f64 {
         let y = self.b[0] * x + self.z1;

@@ -259,22 +259,27 @@ and matching lyrics and speech by hand.
    default, 80 dB below the loudest point, markers, time grid and 100 Hz / 1 kHz / 10 kHz lines
    with their rows reported. A view in the app is still to do, with the spectral view under
    *Later*.)
-2. **Speech and voice-over detection** (`find_speech`): ranges where someone is talking, and
-   whether music is playing underneath (a host over the band's intro, or over crowd noise
-   between songs). Start with a lightweight speech/music classifier in pure Rust: spectral flux,
-   ~4 Hz syllable-rate modulation, harmonicity. Feeds `detect_songs`: talk between songs is a
-   strong boundary cue; a broadcaster's voice-over is a range to report so the user can trim it.
+2. ~~**Speech and voice-over detection**~~ (done: `find_speech` (op, CLI `run`, MCP): talk
+   from the depth of the voice band's dips between syllables and the flatness at its peaks,
+   tuned on the festival broadcast against a transcript. It finds presenters over crowd noise
+   and over a band's intro and the singer talking between songs, and flags 0.2% of the music;
+   it misses talk under a loud cheering crowd. Telling a presenter over a song from singing is
+   left to transcription.)
 3. **Optional transcription**, found and enabled like FFmpeg (a whisper.cpp binary or model file;
    off when absent): a `transcribe` op returning timed segments, and **lyric-aware song
    detection**: match setlist titles against sung hook lines ("head games", "urgent") to place
    and name songs, and use the band's spoken introductions ("this one's called…"). This is what
    made the test recording solvable. Ties in with offline transcription under *Later* and open
    decision 5.
-4. **Tune `detect_songs` on broadcast material.** Detect heavy compression (low loudness range)
-   and lean on spectral and speech cues instead of loudness gaps; keep the test broadcast's
-   correct boundaries as a regression case (from features, not the copyrighted audio). Report
-   *why* each candidate was chosen (gap depth, noise-likeness, speech) so an assistant or user can
-   judge the weak ones.
+4. ~~**Tune `detect_songs` on broadcast material.**~~ (done: on both test broadcasts the
+   loudness and noise cues fired through most of the music (compressed, distorted guitars).
+   Added missing bass with unsteady harmonics, and talk, as gap cues, and the old cues count for
+   less when they fire most of the time. Talk leading into a song stays with it; talk at the
+   start or end becomes an *Intro*/*Outro* marker. Festival broadcast: all 8 starts plus the
+   intro, with 4 extra lower-confidence starts (was 5 of 8 and 7 extra). A second broadcast,
+   not used for tuning: the intro and all 7 songs, nothing extra (was 3). Still open: a crowd
+   singalong inside a song looks like a gap; markers can land a few seconds into talk drowned
+   by cheering; a regression test from the broadcasts' features.)
 5. **Voice-over handling in the album workflow:** list detected voice-overs in the Album window
    and `album_summary`, with one-click "cut between songs" (over crowd noise) or "trim with fade"
    (over music at a show's start or end).
@@ -324,7 +329,8 @@ days, pending open decision 5.
 ## Known limitations
 
 - Song detection is tuned on synthetic audio; defaults need real concert recordings to refine.
-  On broadcast-compressed radio recordings it misses songs and finds false starts (Phase 8).
+  On broadcast-compressed radio recordings it can find a few extra starts (a crowd singalong,
+  a presenter over the music); check them with `spectrogram` and `find_speech`.
   Songs that flow into each other (segues) need markers by hand.
 - Exports at sample rates that aren't a multiple of 75 Hz (e.g. 32 kHz) can't be made CD-safe.
 - Playback has only been verified by tests, not on a range of real audio devices.

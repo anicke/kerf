@@ -934,3 +934,20 @@ fn history_and_disk_changes_across_sessions() {
     ok(&mut c, json!({"op": "redo"}));
     ok(&mut c, json!({"op": "save"}));
 }
+
+#[test]
+fn find_speech_reports_ranges() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = tone(dir.path(), "a.wav", 6.0);
+    let mut s = Session::new(None);
+    ok(&mut s, json!({"op": "open", "path": a}));
+    // A steady tone is not talk (detection itself is tested in `speech`).
+    let r = ok(&mut s, json!({"op": "find_speech", "start": 1}));
+    assert_eq!(r["type"], "speech");
+    assert!(r["ranges"].as_array().unwrap().is_empty());
+    assert_eq!(r["total_secs"], 0.0);
+    assert!(r["summary"]
+        .as_str()
+        .unwrap()
+        .starts_with("0 stretch(es) of talk in 0:01.000"));
+}
