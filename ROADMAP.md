@@ -242,6 +242,57 @@ From reviewing export against established editors.
   alerts and security updates, secret scanning with push protection, approval for outside
   contributors' workflows, and a ruleset blocking force-pushes to and deletion of `main`).
 
+## Phase 8: Song detection on real broadcasts, and MCP polish
+
+From the first real test through `kerf-mcp`: an assistant splitting a 53-minute radio broadcast of
+a festival concert (8 songs, Swedish host voice-overs, professionally mixed and broadcast-limited).
+Kerf's own tools weren't enough to find the songs. With the setlist, `detect_songs` returned 14
+starts: 5 correct, 2 songs missed, 7 false starts. Its loudness-gap cues barely exist after
+broadcast compression (loudness range 2.7 LU), and waveform images can't tell a voice-over from
+the band. The songs were only placed reliably after running an outside transcription (Whisper)
+and matching lyrics and speech by hand.
+
+**Finding the songs**, in order of payoff:
+
+1. **`spectrogram` tool** next to `waveform` (op, CLI and MCP; later a view in the app): a PNG of
+   frequency over time for a range, linear or log frequency, with the same pixel-to-time
+   reporting and marker lines. Speech, crowd noise and music look distinct here, unlike in peaks.
+   Cheap, no new dependencies. Overlaps the spectral view under *Later*.
+2. **Speech and voice-over detection** (`find_speech`): ranges where someone is talking, and
+   whether music is playing underneath (a host over the band's intro, or over crowd noise
+   between songs). Start with a lightweight speech/music classifier in pure Rust: spectral flux,
+   ~4 Hz syllable-rate modulation, harmonicity. Feeds `detect_songs`: talk between songs is a
+   strong boundary cue; a broadcaster's voice-over is a range to report so the user can trim it.
+3. **Optional transcription**, found and enabled like FFmpeg (a whisper.cpp binary or model file;
+   off when absent): a `transcribe` op returning timed segments, and **lyric-aware song
+   detection**: match setlist titles against sung hook lines ("head games", "urgent") to place
+   and name songs, and use the band's spoken introductions ("this one's called…"). This is what
+   made the test recording solvable. Ties in with offline transcription under *Later* and open
+   decision 5.
+4. **Tune `detect_songs` on broadcast material.** Detect heavy compression (low loudness range)
+   and lean on spectral and speech cues instead of loudness gaps; keep the test broadcast's
+   correct boundaries as a regression case (from features, not the copyrighted audio). Report
+   *why* each candidate was chosen (gap depth, noise-likeness, speech) so an assistant or user can
+   judge the weak ones.
+5. **Voice-over handling in the album workflow:** list detected voice-overs in the Album window
+   and `album_summary`, with one-click "cut between songs" (over crowd noise) or "trim with fade"
+   (over music at a show's start or end).
+
+**MCP polish:**
+
+- **Smaller `tools/list`:** every tool's schema repeats the shared `$defs` (about 30 KB in all),
+  which every client loads into the model's context. Inline only the definitions each tool uses,
+  or trim descriptions of rarely needed types.
+- **`prepare_live_album`'s required `recording` argument** is not mentioned in the README; document
+  it (or make it optional and ask for the file).
+- **Claude Code setup in the README:** a `.mcp.json` / `claude mcp add kerf -- kerf-mcp --allow …`
+  example, next to the generic JSON.
+- **Markers in one call:** `set_markers` taking a list (name, position), replacing or adding, as
+  one undo step, instead of one `add_marker` per song.
+
+Size: spectrogram about 1 day; speech detection 2–3 days; transcription and lyric matching 3–5
+days, pending open decision 5; MCP polish about 1 day.
+
 ## Later and ambitious
 
 - **Offline speech transcription** with a local model (nothing sent to the cloud): name songs from
@@ -256,6 +307,7 @@ From reviewing export against established editors.
 ## Known limitations
 
 - Song detection is tuned on synthetic audio; defaults need real concert recordings to refine.
+  On broadcast-compressed radio recordings it misses songs and finds false starts (Phase 8).
   Songs that flow into each other (segues) need markers by hand.
 - Exports at sample rates that aren't a multiple of 75 Hz (e.g. 32 kHz) can't be made CD-safe.
 - Playback has only been verified by tests, not on a range of real audio devices.
@@ -275,4 +327,6 @@ From reviewing export against established editors.
 ## Suggested order
 
 Phase 1 → Phase 2 → Phase 3 → Phase 4, with Phase 7's CI added early (it protects everything
-after it). Phases 5 and 6 can be interleaved as smaller tasks.
+after it). Phases 5 and 6 can be interleaved as smaller tasks. In Phase 8, the spectrogram tool and
+MCP polish come first (small, immediately useful to assistants), then speech detection, then
+transcription once open decision 5 is settled.
