@@ -205,7 +205,8 @@ kerf-cli run --ops edits.jsonl show.wav             # any operation, as JSON
 
 Times are seconds (`83.5`), `m:ss` (`1:23.5`), `h:mm:ss`, or exact samples (`4008000smp`).
 `kerf-cli run` accepts any engine operation (open, import, save, undo/redo, split, delete, clear,
-crop, copy/cut/paste, gain, normalize, fades, markers, album details and loudness, export,
+crop, copy/cut/paste, gain, normalize, fades, markers (one at a time, or all at once with
+`set_markers`), album details and loudness, export,
 compare) as a
 JSON array or one object per line, e.g. `{"op": "fade_out", "start": "41:10", "end": "41:18"}`.
 These are the operations of `kerf_core::ops`, which the MCP server exposes too.
@@ -223,6 +224,15 @@ configuration, naming the folders it may use:
   }
 }
 ```
+
+In Claude Code, add it from the terminal (`--scope user` makes it available in every project):
+
+```sh
+claude mcp add kerf -- kerf-mcp --allow ~/Music
+```
+
+or commit a `.mcp.json` with the JSON above to a project folder. With the AppImage, the
+command is the AppImage itself and `kerf-mcp` its first argument.
 
 - **Tools:** every engine operation (the same as `kerf-cli run`), generated from the operation
   types so they always match. Each returns a one-line summary plus details as JSON.
@@ -243,7 +253,10 @@ configuration, naming the folders it may use:
   Only programs you run can connect (a local connection with a secret token only you can read).
 - **Resources:** `kerf://project`, `kerf://markers`, `kerf://history`. **Prompt:**
   `prepare_live_album` walks through detecting, checking, naming, levelling, tagging and
-  exporting a concert. Long operations report progress and can be cancelled.
+  exporting a concert. Its arguments are all optional: `recording` (an audio file or `.kerf`
+  project; left out, the assistant asks, or in the app uses the open project), `songs`,
+  `setlist` (one title per line), `target_lufs`, `output` and `format` (`cd`, `flac` or `wav`).
+  Long operations report progress and can be cancelled.
 
 ## Layout
 

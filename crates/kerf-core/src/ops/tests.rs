@@ -795,3 +795,68 @@ fn compare_requests_and_responses_round_trip() {
     let j = serde_json::to_string(&resp).unwrap();
     assert_eq!(serde_json::from_str::<Response>(&j).unwrap(), resp, "{j}");
 }
+
+#[test]
+fn set_markers_in_one_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let wav = tone(dir.path(), "take.wav", 10.0);
+    let mut s = Session::new(None);
+    ok(&mut s, json!({"op": "open", "path": wav}));
+    ok(&mut s, json!({"op": "add_marker", "at": 1, "name": "Old"}));
+    let r = ok(
+        &mut s,
+        json!({"op": "set_markers", "markers": [
+            {"at": "0:06", "name": "Second", "artist": "Guest", "isrc": ""},
+            {"at": 2, "name": "First"},
+        ]}),
+    );
+    assert_eq!(r["summary"], "Set 2 marker(s), replacing 1");
+    assert_eq!(r["markers"].as_array().unwrap().len(), 2);
+    let info = ok(&mut s, json!({"op": "info"}));
+    let m = &info["markers"];
+    assert_eq!(m.as_array().unwrap().len(), 2);
+    assert_eq!(m[0]["name"], "First", "sorted by position");
+    assert_eq!(m[0]["auto"], false);
+    assert_eq!(m[1]["name"], "Second");
+    assert_eq!(m[1]["position"]["frames"], 6 * SR as u64);
+    assert_eq!(m[1]["artist"], "Guest");
+    assert!(m[1].get("isrc").is_none(), "empty fields stay unset");
+    assert_eq!(m[1]["id"], r["markers"][0], "ids in the order given");
+
+    // Adding keeps what is there.
+    let r = ok(
+        &mut s,
+        json!({"op": "set_markers", "replace": false, "markers": [{"at": 8, "name": "Third"}]}),
+    );
+    assert_eq!(r["summary"], "Add 1 marker(s)");
+    assert_eq!(
+        ok(&mut s, json!({"op": "info"}))["markers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+
+    // One undo step each; a bad time changes nothing.
+    ok(&mut s, json!({"op": "undo"}));
+    ok(&mut s, json!({"op": "undo"}));
+    assert_eq!(
+        ok(&mut s, json!({"op": "info"}))["markers"][0]["name"],
+        "Old"
+    );
+    assert_eq!(
+        err_code(
+            &mut s,
+            json!({"op": "set_markers", "markers": [
+                {"at": 1, "name": "A"}, {"at": "nonsense", "name": "B"}]})
+        ),
+        "invalid_argument"
+    );
+    assert_eq!(
+        ok(&mut s, json!({"op": "info"}))["markers"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}

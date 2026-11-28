@@ -532,6 +532,41 @@ impl Session {
             R::RemoveMarker { id } => self.edit(format!("Remove marker {id}"), |p| {
                 edit::remove_marker(p, MarkerId(id))
             }),
+            R::SetMarkers { markers, replace } => {
+                let at = markers
+                    .iter()
+                    .map(|m| self.time(&m.at))
+                    .collect::<OpResult<Vec<_>>>()?;
+                let n = markers.len();
+                let old = self.project().markers.len();
+                let label = if replace && old > 0 {
+                    format!("Set {n} marker(s), replacing {old}")
+                } else if replace {
+                    format!("Set {n} marker(s)")
+                } else {
+                    format!("Add {n} marker(s)")
+                };
+                let ids = self.apply(label.clone(), |p| {
+                    if replace {
+                        p.markers.clear();
+                    }
+                    Ok(markers
+                        .into_iter()
+                        .zip(at)
+                        .map(|(m, at)| {
+                            let id = p.add_marker(at, m.name);
+                            let mk = p.marker_mut(id).expect("just added");
+                            mk.artist = m.artist.filter(|a| !a.is_empty());
+                            mk.isrc = m.isrc.filter(|c| !c.is_empty());
+                            id.0
+                        })
+                        .collect::<Vec<_>>())
+                })?;
+                Ok(Response {
+                    summary: label,
+                    data: Data::Markers { markers: ids },
+                })
+            }
             R::ClearMarkers => {
                 let n = self.project().markers.len();
                 self.edit(format!("Remove {n} marker(s)"), |p| {

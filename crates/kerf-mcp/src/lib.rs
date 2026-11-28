@@ -371,8 +371,12 @@ impl ServerHandler for KerfServer {
                 })
                 .filter(|s| !s.trim().is_empty())
         };
-        let recording = arg("recording")
-            .ok_or_else(|| ErrorData::invalid_params("the recording argument is required", None))?;
+        let recording = match arg("recording") {
+            Some(r) => Recording::File(r),
+            // Inside the app the assistant works on the open project.
+            None if !self.inner.tools.iter().any(|t| t.name == "open") => Recording::OpenProject,
+            None => Recording::AskUser,
+        };
         let text = live_album_text(
             &recording,
             arg("songs").as_deref(),
@@ -397,7 +401,7 @@ fn live_album_prompt() -> Prompt {
         "prepare_live_album",
         Some("Turn a live concert recording into a finished album: find the songs, name them, level, tag and export."),
         Some(vec![
-            arg("recording", "The concert recording (audio file or .kerf project).", true),
+            arg("recording", "The concert recording (audio file or .kerf project). Leave it out to be asked, or in the app to use the open project.", false),
             arg("songs", "How many songs were played, if known.", false),
             arg("setlist", "Song titles in order, one per line.", false),
             arg("target_lufs", "Album loudness, e.g. -16 (dynamic live music) or -14 (streaming).", false),
@@ -407,18 +411,38 @@ fn live_album_prompt() -> Prompt {
     )
 }
 
+/// What `prepare_live_album` works on.
+enum Recording {
+    File(String),
+    /// The project open in the app.
+    OpenProject,
+    /// Not given: the assistant asks.
+    AskUser,
+}
+
 fn live_album_text(
-    recording: &str,
+    recording: &Recording,
     songs: Option<&str>,
     setlist: Option<&str>,
     target: Option<&str>,
     output: Option<&str>,
     format: Option<&str>,
 ) -> String {
+    let (what, first) = match recording {
+        Recording::File(r) => (
+            format!("the live recording \"{r}\""),
+            "`open` the recording and check",
+        ),
+        Recording::OpenProject => ("the live recording open in Kerf".to_string(), "Check"),
+        Recording::AskUser => (
+            "a live recording".to_string(),
+            "Ask me which recording to use (an audio file or a .kerf project), `open` it and check",
+        ),
+    };
     let mut t = format!(
-        "Help me turn the live recording \"{recording}\" into a finished album using the Kerf tools. \
+        "Help me turn {what} into a finished album using the Kerf tools. \
          Work step by step and show me what you find before anything is written.\n\n\
-         1. `open` the recording and check `info` and `analyze` (length, levels, clipping).\n"
+         1. {first} `info` and `analyze` (length, levels, clipping).\n"
     );
     t += &match songs {
         Some(n) => format!("2. `detect_songs` with songs = {n}"),
@@ -438,8 +462,8 @@ fn live_album_text(
     }
     t += ", without `apply` first. List the song starts with their confidence. Look at weak \
            or doubtful boundaries with `waveform` (a minute or so around each), and tell me \
-           which ones you're unsure about. When we agree, run it again with `apply` (or adjust \
-           markers with `add_marker`, `update_marker`, `remove_marker`).\n";
+           which ones you're unsure about. When we agree, run it again with `apply`, or place \
+           the agreed starts all at once with `set_markers` (fine-tune with `update_marker`).\n";
     t += "3. Ask me for the album details (artist, album title, year, genre, cover image) if I \
           haven't given them, and set them with `set_album`.\n";
     t += &format!(
@@ -467,7 +491,7 @@ mod tests {
     #[test]
     fn prompt_text_mentions_choices() {
         let t = live_album_text(
-            "show.wav",
+            &Recording::File("show.wav".into()),
             Some("14"),
             Some("1. Intro\n\nSong \"B\"\n"),
             None,
@@ -478,6 +502,12 @@ mod tests {
         assert!(t.contains(r#"setlist = ["1. Intro", "Song \"B\""]"#), "{t}");
         assert!(t.contains("preset = cd"));
         assert!(t.contains("-16 LUFS"));
+        assert!(t.contains("`open` the recording"));
+
+        let t = live_album_text(&Recording::OpenProject, None, None, None, None, None);
+        assert!(t.contains("open in Kerf") && !t.contains("`open`"), "{t}");
+        let t = live_album_text(&Recording::AskUser, None, None, None, None, None);
+        assert!(t.contains("Ask me which recording"), "{t}");
     }
 
     #[test]

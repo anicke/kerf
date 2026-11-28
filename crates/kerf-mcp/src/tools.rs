@@ -54,6 +54,41 @@ fn title(op: &str) -> String {
     t
 }
 
+/// The definitions a schema refers to (`"$ref": "#/$defs/Name"`), directly
+/// or through other definitions. Every tool used to carry all of them, which
+/// made the tool list several times larger than it needs to be.
+fn used_defs(schema: &Value, defs: &Map<String, Value>) -> Map<String, Value> {
+    fn refs<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
+        match v {
+            Value::Object(o) => {
+                if let Some(name) = o
+                    .get("$ref")
+                    .and_then(Value::as_str)
+                    .and_then(|r| r.strip_prefix("#/$defs/"))
+                {
+                    out.push(name);
+                }
+                o.values().for_each(|x| refs(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| refs(x, out)),
+            _ => {}
+        }
+    }
+    let mut used = Map::new();
+    let mut todo = Vec::new();
+    refs(schema, &mut todo);
+    while let Some(name) = todo.pop() {
+        if used.contains_key(name) {
+            continue;
+        }
+        if let Some(def) = defs.get(name) {
+            used.insert(name.to_string(), def.clone());
+            refs(def, &mut todo);
+        }
+    }
+    used
+}
+
 /// One tool per operation.
 pub fn tools() -> Vec<Tool> {
     let schema = schemars::schema_for!(Request);
@@ -97,8 +132,11 @@ pub fn tools() -> Vec<Tool> {
                     input.insert(k, val);
                 }
             }
-            if let Some(d) = &defs {
-                input.insert("$defs".into(), d.clone());
+            if let Some(d) = defs.as_ref().and_then(Value::as_object) {
+                let used = used_defs(&Value::Object(input.clone()), d);
+                if !used.is_empty() {
+                    input.insert("$defs".into(), Value::Object(used));
+                }
             }
 
             let read_only = READ_ONLY.contains(&name.as_str());
@@ -154,6 +192,7 @@ mod tests {
             "update_marker",
             "remove_marker",
             "clear_markers",
+            "set_markers",
             "set_album",
             "album_summary",
             "album_loudness",
@@ -161,7 +200,7 @@ mod tests {
         ] {
             assert!(tools.iter().any(|t| t.name == name), "missing {name}");
         }
-        assert_eq!(tools.len(), 35, "a new operation needs a test entry");
+        assert_eq!(tools.len(), 36, "a new operation needs a test entry");
     }
 
     #[test]
@@ -193,6 +232,41 @@ mod tests {
 
         let undo = Value::Object((*tool(&tools, "undo").input_schema).clone());
         assert!(undo.get("required").is_none());
+    }
+
+    #[test]
+    fn tools_carry_only_the_definitions_they_use() {
+        let tools = tools();
+        for t in &tools {
+            let s = Value::Object((*t.input_schema).clone());
+            let text = s.to_string();
+            let defs = s.get("$defs").and_then(Value::as_object);
+            // Every reference resolves...
+            for part in text.split("\"#/$defs/").skip(1) {
+                let name = part.split('"').next().unwrap();
+                assert!(
+                    defs.is_some_and(|d| d.contains_key(name)),
+                    "{}: unresolved {name}",
+                    t.name
+                );
+            }
+            // ...and nothing unreferenced is carried along.
+            for name in defs.into_iter().flat_map(|d| d.keys()) {
+                assert!(
+                    text.contains(&format!("\"#/$defs/{name}\"")),
+                    "{}: unused {name}",
+                    t.name
+                );
+            }
+        }
+        let undo = Value::Object((*tool(&tools, "undo").input_schema).clone());
+        assert!(undo.get("$defs").is_none());
+
+        let total: usize = tools
+            .iter()
+            .map(|t| serde_json::to_string(t).unwrap().len())
+            .sum();
+        assert!(total < 40_000, "the tool list grew to {total} bytes");
     }
 
     #[test]

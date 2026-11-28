@@ -237,6 +237,7 @@ fn print_response(r: &Response) {
         | Data::Levels(_)
         | Data::Track { .. }
         | Data::Marker { .. }
+        | Data::Markers { .. }
         | Data::AlbumLoudness(_) => {}
     }
 }

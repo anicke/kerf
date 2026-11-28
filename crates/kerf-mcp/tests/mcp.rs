@@ -209,10 +209,13 @@ async fn live_album_prompt() {
         .unwrap();
     let msg = serde_json::to_value(&p.messages[0]).unwrap().to_string();
     assert!(msg.contains("songs = 12"), "{msg}");
-    assert!(c
+    // Without a recording the assistant asks for one.
+    let p = c
         .get_prompt(GetPromptRequestParams::new("prepare_live_album"))
         .await
-        .is_err());
+        .unwrap();
+    let msg = serde_json::to_value(&p.messages[0]).unwrap().to_string();
+    assert!(msg.contains("Ask me which recording"), "{msg}");
     c.cancel().await.unwrap();
 }
 

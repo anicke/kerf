@@ -278,20 +278,18 @@ and matching lyrics and speech by hand.
    and `album_summary`, with one-click "cut between songs" (over crowd noise) or "trim with fade"
    (over music at a show's start or end).
 
-**MCP polish:**
+**MCP polish:** done.
 
-- **Smaller `tools/list`:** every tool's schema repeats the shared `$defs` (about 30 KB in all),
-  which every client loads into the model's context. Inline only the definitions each tool uses,
-  or trim descriptions of rarely needed types.
-- **`prepare_live_album`'s required `recording` argument** is not mentioned in the README; document
-  it (or make it optional and ask for the file).
-- **Claude Code setup in the README:** a `.mcp.json` / `claude mcp add kerf -- kerf-mcp --allow …`
-  example, next to the generic JSON.
-- **Markers in one call:** `set_markers` taking a list (name, position), replacing or adding, as
-  one undo step, instead of one `add_marker` per song.
+- ~~**Smaller `tools/list`**~~ (done: each tool carries only the `$defs` it refers to; the list
+  went from about 134 KB to 34 KB, which every client loads into the model's context).
+- ~~**`prepare_live_album`'s `recording` argument**~~ (done: optional; left out, the assistant
+  asks, or in the app works on the open project; all arguments are in the README).
+- ~~**Claude Code setup in the README**~~ (done: `claude mcp add` and `.mcp.json`).
+- ~~**Markers in one call**~~ (done: `set_markers` takes a list of markers (position, name,
+  optional artist and ISRC) and replaces or adds them as one undo step; CLI `run` too).
 
 Size: spectrogram about 1 day; speech detection 2–3 days; transcription and lyric matching 3–5
-days, pending open decision 5; MCP polish about 1 day.
+days, pending open decision 5.
 
 ## Later and ambitious
 
@@ -327,6 +325,6 @@ days, pending open decision 5; MCP polish about 1 day.
 ## Suggested order
 
 Phase 1 → Phase 2 → Phase 3 → Phase 4, with Phase 7's CI added early (it protects everything
-after it). Phases 5 and 6 can be interleaved as smaller tasks. In Phase 8, the spectrogram tool and
-MCP polish come first (small, immediately useful to assistants), then speech detection, then
-transcription once open decision 5 is settled.
+after it). Phases 5 and 6 can be interleaved as smaller tasks. In Phase 8, the spectrogram tool comes
+first (small, immediately useful to assistants), then speech detection, then transcription once
+open decision 5 is settled.

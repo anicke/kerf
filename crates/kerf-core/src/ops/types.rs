@@ -244,6 +244,20 @@ pub enum Version {
     File(PathBuf),
 }
 
+/// A marker to place with `set_markers`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct NewMarker {
+    pub at: Time,
+    pub name: String,
+    /// Track artist when it differs from the album artist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<String>,
+}
+
 /// One operation. In JSON: `{"op": "split", "at": "1:23.5"}`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -522,6 +536,14 @@ pub enum Request {
     RemoveMarker {
         id: u64,
     },
+    /// Place several markers in one undoable step, e.g. every song start at
+    /// once: `[{"at": "3:57.1", "name": "Head Games"}, ...]`. With `replace`
+    /// (the default) all existing markers are removed first.
+    SetMarkers {
+        markers: Vec<NewMarker>,
+        #[serde(default = "yes")]
+        replace: bool,
+    },
     /// Remove all markers.
     ClearMarkers,
 
@@ -592,13 +614,23 @@ pub struct Response {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Data {
     None,
-    Track { track: u64 },
-    Marker { marker: u64 },
+    Track {
+        track: u64,
+    },
+    Marker {
+        marker: u64,
+    },
+    /// Marker ids, in the order the markers were given.
+    Markers {
+        markers: Vec<u64>,
+    },
     History(HistoryInfo),
     Project(Box<ProjectInfo>),
     Levels(Levels),
     Songs(SongsReport),
-    Normalized { tracks: Vec<NormalizedTrack> },
+    Normalized {
+        tracks: Vec<NormalizedTrack>,
+    },
     Silences(Silences),
     Waveform(WaveformInfo),
     Album(AlbumReport),
